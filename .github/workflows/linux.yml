@@ -1,0 +1,31 @@
+name: Linux
+on: push
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Check out repository code
+        uses: actions/checkout@v3
+        with:
+          submodules: 'recursive'
+      - name: Install Requirements
+        run: |
+          export DEBIAN_FRONTED=noninteractive
+          sudo apt-get -qq update
+          sudo apt-get install -y libmbedtls-dev libcurl4-openssl-dev cmake
+      - name: Build
+        run: |
+          mkdir build && cd build
+          cmake ..
+          cmake --build .
+          cd ..
+          mkdir dist
+          cp build/CemuMegaDownloader dist/CemuMegaDownloader
+          cp titles.json dist/titles.json
+      - name: Upload Linux Artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: CemuMegaDownloader-Linux
+          path: dist/
+          if-no-files-found: warn
