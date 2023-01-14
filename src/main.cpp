@@ -1,5 +1,6 @@
 #include <downloader.h>
 #include <iostream>
+#include <filesystem>
 #include <dirent.h>
 #include <fstream>
 
@@ -10,17 +11,12 @@
 #define REGION_USA 1
 #define REGION_JPN 2
 
-static void removeFiles(const std::string& path) {
-    DIR* dir = opendir(path.c_str());
-    struct dirent* entry = readdir(dir);
-    while (entry != NULL) {
-        if (entry->d_type == DT_REG) { // Check if the entry is a regular file
-            std::string file_path = path + "/" + entry->d_name;
-            remove(file_path.c_str()); // remove the file
+void removeFiles(const std::string& path) {
+    for(const auto & entry : std::filesystem::directory_iterator(path)) {
+        if(entry.is_regular_file()) {
+            std::filesystem::remove(entry.path());
         }
-        entry = readdir(dir);
     }
-    closedir(dir);
 }
 
 int main() {
