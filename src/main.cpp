@@ -91,6 +91,8 @@ int main() {
         }
     }
 exit:
+    std::cout << "Press any key to exit...\n";
+    std::cin.get();
     titlesJson.close();
     return 0;
 }
