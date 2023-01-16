@@ -1,11 +1,11 @@
 {
     "EUR": [
         {"titleID": "000500101004A200", "path": "./mlc01/sys/title/00050010/1004A200"},
-        {"titleID": "000500301001520A", "path": "./mlc01/sys/title/00050030/1001520A"},
+        {"titleID": "000500301001520A", "path": "./mlc01/sys/title/00050030/1001520A"}
     ],
     "USA": [
         {"titleID": "000500101004A100", "path": "./mlc01/sys/title/00050010/1004A100"},
-        {"titleID": "000500301001510A", "path": "./mlc01/sys/title/00050030/1001510A"},
+        {"titleID": "000500301001510A", "path": "./mlc01/sys/title/00050030/1001510A"}
     ],
     "JPN": [
         {"titleID": "000500101004A000", "path": "./mlc01/sys/title/00050010/1004A000"},
