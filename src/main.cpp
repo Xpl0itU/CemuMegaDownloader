@@ -10,12 +10,28 @@
 #define REGION_EUR 0
 #define REGION_USA 1
 #define REGION_JPN 2
+#define REGION_ALL 3
 
-void removeFiles(const std::string& path) {
+static void removeFiles(const std::string& path) {
     for(const auto & entry : std::filesystem::directory_iterator(path)) {
         if(entry.is_regular_file()) {
             std::filesystem::remove(entry.path());
         }
+    }
+}
+
+static void downloadTitlesFromArray(Json::Value array, size_t size) {
+    for (int i = 0; i < size; ++i) {
+        char *outputPath = strdup(array[i].get("path", "./mlc01/sys/title/00050010/1004A200").asCString());
+        downloadTitle(array[i].get("titleID", "000500101004A200").asCString(), outputPath);
+        char *argv[2] = {(char *)"CemuMegaDownloader", outputPath};
+        if (cdecrypt(2, argv) != 0) {
+            std::cout << "Error: There was a problem decrypting the files.\nThe path specified for the download might be too long.\nPlease try downloading the files to a shorter path and try again.\n";
+            free(outputPath);
+            return;
+        }
+        removeFiles(outputPath);
+        free(outputPath);
     }
 }
 
@@ -27,7 +43,7 @@ int main() {
     }
     Json::Value root;
     titlesJson >> root;
-    Json::Value regionArray[3] = {root["EUR"], root["USA"], root["JPN"]};
+    Json::Value regionArray[4] = {root["EUR"], root["USA"], root["JPN"], root["All"]};
     int choice;
     while (true) {
         std::cout << "1. Download EUR titles" << std::endl;
@@ -39,50 +55,17 @@ int main() {
 
         switch (choice) {
             case 1: // EUR
-                for (int i = 0; i < regionArray[REGION_EUR].size(); ++i) {
-                    char *outputPath = strdup(regionArray[REGION_EUR][i].get("path", "./mlc01/sys/title/00050010/1004A200").asCString());
-                    downloadTitle(regionArray[REGION_EUR][i].get("titleID", "000500101004A200").asCString(), outputPath);
-                    char *argv[2] = {"CemuMegaDownloader", outputPath};
-                    if (cdecrypt(2, argv) != 0) {
-                        std::cout << "Error: There was a problem decrypting the files.\nThe path specified for the download might be too long.\nPlease try downloading the files to a shorter path and try again.\n";
-                        free(outputPath);
-                        goto exit;
-                    }
-                    removeFiles(outputPath);
-                    free(outputPath);
-                }
+                downloadTitlesFromArray(regionArray[REGION_EUR], regionArray[REGION_EUR].size());
                 std::cout << "EUR titles downloaded" << std::endl;
-                goto exit;
+                goto downloadAll;
             case 2: // USA
-                for (int i = 0; i < regionArray[REGION_USA].size(); ++i) {
-                    char *outputPath = strdup(regionArray[REGION_USA][i].get("path", "./mlc01/sys/title/00050010/1004A200").asCString());
-                    downloadTitle(regionArray[REGION_USA][i].get("titleID", "000500101004A200").asCString(), outputPath);
-                    char *argv[2] = {"CemuMegaDownloader", outputPath};
-                    if (cdecrypt(2, argv) != 0) {
-                        std::cout << "Error: There was a problem decrypting the files.\nThe path specified for the download might be too long.\nPlease try downloading the files to a shorter path and try again.\n";
-                        free(outputPath);
-                        goto exit;
-                    }
-                    removeFiles(outputPath);
-                    free(outputPath);
-                }
+                downloadTitlesFromArray(regionArray[REGION_USA], regionArray[REGION_USA].size());
                 std::cout << "USA titles downloaded" << std::endl;
-                goto exit;
+                goto downloadAll;
             case 3: // JPN
-                for (int i = 0; i < regionArray[REGION_JPN].size(); ++i) {
-                    char *outputPath = strdup(regionArray[REGION_JPN][i].get("path", "./mlc01/sys/title/00050010/1004A200").asCString());
-                    downloadTitle(regionArray[REGION_JPN][i].get("titleID", "000500101004A200").asCString(), outputPath);
-                    char *argv[2] = {"CemuMegaDownloader", outputPath};
-                    if (cdecrypt(2, argv) != 0) {
-                        std::cout << "Error: There was a problem decrypting the files.\nThe path specified for the download might be too long.\nPlease try downloading the files to a shorter path and try again.\n";
-                        free(outputPath);
-                        goto exit;
-                    }
-                    removeFiles(outputPath);
-                    free(outputPath);
-                }
+                downloadTitlesFromArray(regionArray[REGION_JPN], regionArray[REGION_JPN].size());
                 std::cout << "JPN titles downloaded" << std::endl;
-                goto exit;
+                goto downloadAll;
             case 4: // Exit
                 goto exit;
             default: // Invalid option selected
@@ -90,6 +73,9 @@ int main() {
                 break;
         }
     }
+downloadAll:
+    downloadTitlesFromArray(regionArray[REGION_ALL], regionArray[REGION_ALL].size());
+    std::cout << "Common titles downloaded" << std::endl;
 exit:
     std::cout << "Press any key to exit...\n";
     std::cin.ignore();

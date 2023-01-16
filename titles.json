@@ -2,23 +2,16 @@
     "EUR": [
         {"titleID": "000500101004A200", "path": "./mlc01/sys/title/00050010/1004A200"},
         {"titleID": "000500301001520A", "path": "./mlc01/sys/title/00050030/1001520A"},
-
-        {"titleID": "0005001b10056000", "path": "./mlc01/sys/title/0005001b/10056000"},
-        {"titleID": "000500101000400A", "path": "./mlc01/sys/title/00050010/1000400A"},
-        {"titleID": "0005001b10054000", "path": "./mlc01/sys/title/0005001b/10054000"}
     ],
     "USA": [
         {"titleID": "000500101004A100", "path": "./mlc01/sys/title/00050010/1004A100"},
         {"titleID": "000500301001510A", "path": "./mlc01/sys/title/00050030/1001510A"},
-
-        {"titleID": "0005001b10056000", "path": "./mlc01/sys/title/0005001b/10056000"},
-        {"titleID": "000500101000400A", "path": "./mlc01/sys/title/00050010/1000400A"},
-        {"titleID": "0005001b10054000", "path": "./mlc01/sys/title/0005001b/10054000"}
     ],
     "JPN": [
         {"titleID": "000500101004A000", "path": "./mlc01/sys/title/00050010/1004A000"},
-        {"titleID": "000500301001500A", "path": "./mlc01/sys/title/00050030/1001500A"},
-
+        {"titleID": "000500301001500A", "path": "./mlc01/sys/title/00050030/1001500A"}
+    ],
+    "All": [
         {"titleID": "0005001b10056000", "path": "./mlc01/sys/title/0005001b/10056000"},
         {"titleID": "000500101000400A", "path": "./mlc01/sys/title/00050010/1000400A"},
         {"titleID": "0005001b10054000", "path": "./mlc01/sys/title/0005001b/10054000"}
