@@ -21,7 +21,7 @@ static void removeFiles(const std::string& path) {
 }
 
 static void downloadTitlesFromArray(Json::Value array, size_t size) {
-    for (size_t i = 0; i < size; ++i) {
+    for (int i = 0; i < size; ++i) {
         char *outputPath = strdup(array[i].get("path", "./mlc01/sys/title/00050010/1004A200").asCString());
         downloadTitle(array[i].get("titleID", "000500101004A200").asCString(), outputPath);
         char *argv[2] = {(char *)"CemuMegaDownloader", outputPath};
