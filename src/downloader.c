@@ -1,3 +1,4 @@
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -11,7 +12,6 @@
 #include <curl/curl.h>
 
 #include <downloader.h>
-#include <keygen.h>
 #include <utils.h>
 
 struct MemoryStruct {

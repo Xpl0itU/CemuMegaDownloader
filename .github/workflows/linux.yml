@@ -14,11 +14,6 @@ jobs:
           export DEBIAN_FRONTED=noninteractive
           sudo apt-get -qq update
           sudo apt-get install -y git libcurl4-openssl-dev cmake
-      - name: Build mbedtls static
-        run: |
-          git clone --recursive https://github.com/Mbed-TLS/mbedtls -b v3.3.0 && cd mbedtls
-          make no_test
-          sudo make install
       - name: Build
         run: |
           mkdir build && cd build

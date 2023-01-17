@@ -3,8 +3,6 @@ project(CemuMegaDownloader)
 
 list(APPEND CMAKE_MODULE_PATH ${CMAKE_SOURCE_DIR}/cmake)
 
-find_package(MbedTLS)
-
 link_directories(
     ${GTKMM_LIBRARY_DIRS}
     /usr/local/lib
@@ -35,8 +33,5 @@ add_executable(${CMAKE_PROJECT_NAME}
 target_link_libraries(${CMAKE_PROJECT_NAME}
     ${GTKMM_LIBRARIES}
     stdc++
-    mbedtls
-    mbedcrypto
-    mbedx509
     curl
 )
