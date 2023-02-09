@@ -14,6 +14,7 @@
     "All": [
         {"titleID": "0005001b10056000", "path": "./mlc01/sys/title/0005001b/10056000"},
         {"titleID": "000500101000400A", "path": "./mlc01/sys/title/00050010/1000400A"},
-        {"titleID": "0005001b10054000", "path": "./mlc01/sys/title/0005001b/10054000"}
+        {"titleID": "0005001b10054000", "path": "./mlc01/sys/title/0005001b/10054000"},
+        {"titleID": "0005001b1004F000", "path": "./mlc01/sys/title/0005001b/1004F000"}
     ]
 }
