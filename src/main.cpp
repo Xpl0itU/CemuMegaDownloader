@@ -51,7 +51,14 @@ int main() {
         std::cout << "3. Download JPN titles" << std::endl;
         std::cout << "4. Exit" << std::endl;
         std::cout << "Select an option: ";
-        std::cin >> choice;
+        if (!(std::cin >> choice)) {
+            // Standard input is no longer available (for example the
+            // terminal was closed or a pipe reached EOF). Exit cleanly
+            // instead of looping forever, which would keep the process
+            // running and continuously writing to a closed terminal.
+            std::cout << "\nNo input available, exiting.\n";
+            goto exit;
+        }
 
         switch (choice) {
             case 1: // EUR
