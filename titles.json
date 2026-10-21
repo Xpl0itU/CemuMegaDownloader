@@ -1,20 +1,482 @@
 {
-    "EUR": [
-        {"titleID": "000500101004A200", "path": "./mlc01/sys/title/00050010/1004A200"},
-        {"titleID": "000500301001520A", "path": "./mlc01/sys/title/00050030/1001520A"}
-    ],
-    "USA": [
-        {"titleID": "000500101004A100", "path": "./mlc01/sys/title/00050010/1004A100"},
-        {"titleID": "000500301001510A", "path": "./mlc01/sys/title/00050030/1001510A"}
-    ],
-    "JPN": [
-        {"titleID": "000500101004A000", "path": "./mlc01/sys/title/00050010/1004A000"},
-        {"titleID": "000500301001500A", "path": "./mlc01/sys/title/00050030/1001500A"}
-    ],
-    "All": [
-        {"titleID": "0005001b10056000", "path": "./mlc01/sys/title/0005001b/10056000"},
-        {"titleID": "000500101000400A", "path": "./mlc01/sys/title/00050010/1000400A"},
-        {"titleID": "0005001b10054000", "path": "./mlc01/sys/title/0005001b/10054000"},
-        {"titleID": "0005001b1004F000", "path": "./mlc01/sys/title/0005001b/1004F000"}
-    ]
+  "EUR": [
+    {
+      "titleID": "0005001010040200",
+      "name": "Wii U Menu"
+    },
+    {
+      "titleID": "0005001010041200",
+      "name": "Version data"
+    },
+    {
+      "titleID": "0005001010043200",
+      "name": "DRC firmware"
+    },
+    {
+      "titleID": "0005001010044200",
+      "name": "DRC language texture atlas"
+    },
+    {
+      "titleID": "0005001010045200",
+      "name": "System Updater"
+    },
+    {
+      "titleID": "0005001010047200",
+      "name": "System Settings"
+    },
+    {
+      "titleID": "0005001010048200",
+      "name": "Parental Controls"
+    },
+    {
+      "titleID": "0005001010049200",
+      "name": "User Settings"
+    },
+    {
+      "titleID": "000500101004a200",
+      "name": "Mii Maker"
+    },
+    {
+      "titleID": "000500101004b200",
+      "name": "Account Settings"
+    },
+    {
+      "titleID": "000500101004c200",
+      "name": "Daily Log"
+    },
+    {
+      "titleID": "000500101004d200",
+      "name": "Notifications"
+    },
+    {
+      "titleID": "000500101004e200",
+      "name": "Health and Safety Information"
+    },
+    {
+      "titleID": "000500101005a200",
+      "name": "Wii U Chat"
+    },
+    {
+      "titleID": "0005001010062200",
+      "name": "Software/Data Transfer"
+    },
+    {
+      "titleID": "0005001b10059200",
+      "name": "Wii U Electronic Manual"
+    },
+    {
+      "titleID": "0005001b10067200",
+      "name": "Caffeine title ID list"
+    },
+    {
+      "titleID": "0005001b10069200",
+      "name": "pclkey_eur"
+    },
+    {
+      "titleID": "0005003010010209",
+      "name": "HOME Menu (OSv9)"
+    },
+    {
+      "titleID": "000500301001020a",
+      "name": "HOME Menu (OSv10)"
+    },
+    {
+      "titleID": "0005003010011209",
+      "name": "Fatal Error Viewer (OSv9)"
+    },
+    {
+      "titleID": "000500301001120a",
+      "name": "Fatal Error Viewer (OSv10)"
+    },
+    {
+      "titleID": "00050030100112ff",
+      "name": "Fatal Error Viewer (OSv255)"
+    },
+    {
+      "titleID": "000500301001220a",
+      "name": "Internet Browser (OSv10)"
+    },
+    {
+      "titleID": "000500301001320a",
+      "name": "Nintendo TVii"
+    },
+    {
+      "titleID": "000500301001420a",
+      "name": "Nintendo eShop"
+    },
+    {
+      "titleID": "000500301001520a",
+      "name": "Friend List"
+    },
+    {
+      "titleID": "000500301001620a",
+      "name": "Miiverse"
+    },
+    {
+      "titleID": "0005003010017209",
+      "name": "Wii U Electronic Manual (OSv9)"
+    },
+    {
+      "titleID": "000500301001720a",
+      "name": "Wii U Electronic Manual (OSv10)"
+    },
+    {
+      "titleID": "000500301001820a",
+      "name": "Download Management"
+    },
+    {
+      "titleID": "000500301001920a",
+      "name": "Miiverse Post App"
+    },
+    {
+      "titleID": "000500301006d20a",
+      "name": "amiibo Settings"
+    }
+  ],
+  "USA": [
+    {
+      "titleID": "0005001010040100",
+      "name": "Wii U Menu"
+    },
+    {
+      "titleID": "0005001010041100",
+      "name": "Version data"
+    },
+    {
+      "titleID": "0005001010043100",
+      "name": "DRC firmware"
+    },
+    {
+      "titleID": "0005001010044100",
+      "name": "DRC language texture atlas"
+    },
+    {
+      "titleID": "0005001010045100",
+      "name": "System Updater"
+    },
+    {
+      "titleID": "0005001010047100",
+      "name": "System Settings"
+    },
+    {
+      "titleID": "0005001010048100",
+      "name": "Parental Controls"
+    },
+    {
+      "titleID": "0005001010049100",
+      "name": "User Settings"
+    },
+    {
+      "titleID": "000500101004a100",
+      "name": "Mii Maker"
+    },
+    {
+      "titleID": "000500101004b100",
+      "name": "Account Settings"
+    },
+    {
+      "titleID": "000500101004c100",
+      "name": "Daily Log"
+    },
+    {
+      "titleID": "000500101004d100",
+      "name": "Notifications"
+    },
+    {
+      "titleID": "000500101004e100",
+      "name": "Health and Safety Information"
+    },
+    {
+      "titleID": "000500101005a100",
+      "name": "Wii U Chat"
+    },
+    {
+      "titleID": "0005001010062100",
+      "name": "Software/Data Transfer"
+    },
+    {
+      "titleID": "0005001b10059100",
+      "name": "Wii U Electronic Manual"
+    },
+    {
+      "titleID": "0005001b10067100",
+      "name": "Caffeine title ID list"
+    },
+    {
+      "titleID": "0005001b10069100",
+      "name": "pclkey_usa"
+    },
+    {
+      "titleID": "0005003010010109",
+      "name": "HOME Menu (OSv9)"
+    },
+    {
+      "titleID": "0005003010011109",
+      "name": "Fatal Error Viewer (OSv9)"
+    },
+    {
+      "titleID": "000500301001010a",
+      "name": "HOME Menu (OSv10)"
+    },
+    {
+      "titleID": "000500301001110a",
+      "name": "Fatal Error Viewer (OSv10)"
+    },
+    {
+      "titleID": "00050030100111ff",
+      "name": "Fatal Error Viewer (OSv255)"
+    },
+    {
+      "titleID": "000500301001210a",
+      "name": "Internet Browser (OSv10)"
+    },
+    {
+      "titleID": "000500301001310a",
+      "name": "Nintendo TVii"
+    },
+    {
+      "titleID": "000500301001410a",
+      "name": "Nintendo eShop"
+    },
+    {
+      "titleID": "000500301001510a",
+      "name": "Friend List"
+    },
+    {
+      "titleID": "000500301001610a",
+      "name": "Miiverse"
+    },
+    {
+      "titleID": "0005003010017109",
+      "name": "Wii U Electronic Manual (OSv9)"
+    },
+    {
+      "titleID": "000500301001710a",
+      "name": "Wii U Electronic Manual (OSv10)"
+    },
+    {
+      "titleID": "000500301001810a",
+      "name": "Download Management"
+    },
+    {
+      "titleID": "000500301001910a",
+      "name": "Miiverse Post App"
+    },
+    {
+      "titleID": "000500301006d10a",
+      "name": "amiibo Settings"
+    }
+  ],
+  "JPN": [
+    {
+      "titleID": "0005001010040000",
+      "name": "Wii U Menu"
+    },
+    {
+      "titleID": "0005001010041000",
+      "name": "Version data"
+    },
+    {
+      "titleID": "0005001010043000",
+      "name": "DRC firmware"
+    },
+    {
+      "titleID": "0005001010044000",
+      "name": "DRC language texture atlas"
+    },
+    {
+      "titleID": "0005001010045000",
+      "name": "System Updater"
+    },
+    {
+      "titleID": "0005001010047000",
+      "name": "System Settings"
+    },
+    {
+      "titleID": "0005001010048000",
+      "name": "Parental Controls"
+    },
+    {
+      "titleID": "0005001010049000",
+      "name": "User Settings"
+    },
+    {
+      "titleID": "000500101004a000",
+      "name": "Mii Maker"
+    },
+    {
+      "titleID": "000500101004b000",
+      "name": "Account Settings"
+    },
+    {
+      "titleID": "000500101004c000",
+      "name": "Daily Log"
+    },
+    {
+      "titleID": "000500101004d000",
+      "name": "Notifications"
+    },
+    {
+      "titleID": "000500101004e000",
+      "name": "Health and Safety Information"
+    },
+    {
+      "titleID": "000500101005a000",
+      "name": "Wii U Chat"
+    },
+    {
+      "titleID": "0005001010062000",
+      "name": "Software/Data Transfer"
+    },
+    {
+      "titleID": "0005001b10059000",
+      "name": "Wii U Electronic Manual"
+    },
+    {
+      "titleID": "0005001b10067000",
+      "name": "Caffeine title ID list"
+    },
+    {
+      "titleID": "0005001b10069000",
+      "name": "pclkey_jpn"
+    },
+    {
+      "titleID": "0005003010010009",
+      "name": "HOME Menu (OSv9)"
+    },
+    {
+      "titleID": "0005003010011009",
+      "name": "Fatal Error Viewer (OSv9)"
+    },
+    {
+      "titleID": "000500301001000a",
+      "name": "HOME Menu (OSv10)"
+    },
+    {
+      "titleID": "000500301001100a",
+      "name": "Fatal Error Viewer (OSv10)"
+    },
+    {
+      "titleID": "00050030100110ff",
+      "name": "Fatal Error Viewer (OSv255)"
+    },
+    {
+      "titleID": "000500301001200a",
+      "name": "Internet Browser (OSv10)"
+    },
+    {
+      "titleID": "000500301001300a",
+      "name": "Nintendo TVii"
+    },
+    {
+      "titleID": "000500301001400a",
+      "name": "Nintendo eShop"
+    },
+    {
+      "titleID": "000500301001500a",
+      "name": "Friend List"
+    },
+    {
+      "titleID": "000500301001600a",
+      "name": "Miiverse"
+    },
+    {
+      "titleID": "0005003010017009",
+      "name": "Wii U Electronic Manual (OSv9)"
+    },
+    {
+      "titleID": "000500301001700a",
+      "name": "Wii U Electronic Manual (OSv10)"
+    },
+    {
+      "titleID": "000500301001800a",
+      "name": "Download Management"
+    },
+    {
+      "titleID": "000500301001900a",
+      "name": "Miiverse Post App"
+    },
+    {
+      "titleID": "000500301006d00a",
+      "name": "amiibo Settings"
+    }
+  ],
+  "All": [
+    {
+      "titleID": "0005001010066000",
+      "name": "ECO Process"
+    },
+    {
+      "titleID": "0005001b10042300",
+      "name": "memoryclear_exceptions"
+    },
+    {
+      "titleID": "0005001b10042400",
+      "name": "Fonts"
+    },
+    {
+      "titleID": "0005001b1004f000",
+      "name": "SWKBD (Software Keyboard) Data"
+    },
+    {
+      "titleID": "0005001b10050000",
+      "name": "DeviceEula"
+    },
+    {
+      "titleID": "0005001b10051000",
+      "name": "ErrEula"
+    },
+    {
+      "titleID": "0005001b10052000",
+      "name": "Country/Location data"
+    },
+    {
+      "titleID": "0005001b10053000",
+      "name": "NGWord"
+    },
+    {
+      "titleID": "0005001b10054000",
+      "name": "key and cert files"
+    },
+    {
+      "titleID": "0005001b10056000",
+      "name": "Mii rendering resources"
+    },
+    {
+      "titleID": "0005001b10057000",
+      "name": "Boot screen resources"
+    },
+    {
+      "titleID": "0005001b10058000",
+      "name": "Resources for DRMApp"
+    },
+    {
+      "titleID": "0005001b1005c000",
+      "name": "Country and language data for nn_ec.rpl"
+    },
+    {
+      "titleID": "0005001b1005f000",
+      "name": "OS Patch Map"
+    },
+    {
+      "titleID": "0005001b10063000",
+      "name": "wagonu_specification"
+    },
+    {
+      "titleID": "0005001b10065000",
+      "name": "live.dat"
+    },
+    {
+      "titleID": "0005001b10068000",
+      "name": "Title ID list for nn_sl.rpl"
+    },
+    {
+      "titleID": "0005001b1006c000",
+      "name": "trial_list"
+    },
+    {
+      "titleID": "000500301001a10a",
+      "name": "AOC Overlay App"
+    }
+  ]
 }
