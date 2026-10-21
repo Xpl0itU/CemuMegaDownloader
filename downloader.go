@@ -38,6 +38,7 @@ const (
 	h3HeaderSize           = 0x400
 	h3BatchSize            = h3TotalBlock * 32
 	linearChunkSize        = 4 * 1024 * 1024
+	maxHTTPMetadataBytes   = 16 * 1024 * 1024
 	maxRetries             = 5
 	retryDelay             = 3 * time.Second
 	maxConcurrentDownloads = 4
@@ -91,26 +92,47 @@ func NormalizeTID(titleID string) string {
 	return strings.ToLower(strings.TrimSpace(r.Replace(titleID)))
 }
 
-func fetchHTTPText(client *http.Client, urlStr string, timeout time.Duration) (string, error) {
-	req, err := http.NewRequest("GET", urlStr, nil)
+func isSafeSingleName(name string) bool {
+	if name == "" || name == "." || name == ".." {
+		return false
+	}
+	if strings.ContainsAny(name, "/\\") {
+		return false
+	}
+	return filepath.IsLocal(name)
+}
+
+func isPathInsideBase(baseDir, targetPath string) bool {
+	rel, err := filepath.Rel(baseDir, targetPath)
+	if err != nil {
+		return false
+	}
+	return filepath.IsLocal(rel)
+}
+
+func fetchHTTPText(ctx context.Context, client *http.Client, urlStr string, timeout time.Duration) (string, error) {
+	reqCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, urlStr, nil)
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36")
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
 	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
 	req.Header.Set("Accept-Language", "en-US,en;q=0.9")
 
-	c := *client
-	c.Timeout = timeout
-	resp, err := c.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return "", err
 	}
 	defer resp.Body.Close()
+
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
-	b, err := io.ReadAll(resp.Body)
+
+	b, err := io.ReadAll(io.LimitReader(resp.Body, maxHTTPMetadataBytes))
 	if err != nil {
 		return "", err
 	}
@@ -133,9 +155,9 @@ func loadEmbeddedNameFallback() map[string]string {
 	return names
 }
 
-func scrapeWiiUBrewNames(client *http.Client) map[string]string {
+func scrapeWiiUBrewNames(ctx context.Context, client *http.Client) map[string]string {
 	names := make(map[string]string)
-	body, err := fetchHTTPText(client, wiiuBrewDBURL, 15*time.Second)
+	body, err := fetchHTTPText(ctx, client, wiiuBrewDBURL, 15*time.Second)
 	if err != nil {
 		return names
 	}
@@ -192,6 +214,7 @@ func scrapeWiiUBrewNames(client *http.Client) map[string]string {
 }
 
 func GenerateTitlesJSON(client *http.Client, dstPath string) ([]byte, error) {
+	ctx := context.Background()
 	nameMap := loadEmbeddedNameFallback()
 
 	var wg sync.WaitGroup
@@ -201,11 +224,11 @@ func GenerateTitlesJSON(client *http.Client, dstPath string) ([]byte, error) {
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		rawMLC, _ = fetchHTTPText(client, RemoteMLCTitlesURL, 12*time.Second)
+		rawMLC, _ = fetchHTTPText(ctx, client, RemoteMLCTitlesURL, 12*time.Second)
 	}()
 	go func() {
 		defer wg.Done()
-		wMap = scrapeWiiUBrewNames(client)
+		wMap = scrapeWiiUBrewNames(ctx, client)
 	}()
 	wg.Wait()
 
@@ -280,18 +303,18 @@ func ParseTMD(data []byte) (*TMD, error) {
 	tmd := &TMD{}
 	reader := bytes.NewReader(data)
 
-	reader.Seek(0x180, io.SeekStart)
+	_, _ = reader.Seek(0x180, io.SeekStart)
 	if err := binary.Read(reader, binary.BigEndian, &tmd.Version); err != nil {
 		return nil, err
 	}
 
 	switch tmd.Version {
 	case 0x00:
-		reader.Seek(0x18C, io.SeekStart)
+		_, _ = reader.Seek(0x18C, io.SeekStart)
 		if err := binary.Read(reader, binary.BigEndian, &tmd.TitleID); err != nil {
 			return nil, err
 		}
-		reader.Seek(0x1DC, io.SeekStart)
+		_, _ = reader.Seek(0x1DC, io.SeekStart)
 		if err := binary.Read(reader, binary.BigEndian, &tmd.TitleVersion); err != nil {
 			return nil, err
 		}
@@ -299,15 +322,15 @@ func ParseTMD(data []byte) (*TMD, error) {
 			return nil, err
 		}
 
-		minNeeded := uint64(0x1E4) + (uint64(tmd.ContentCount) * 0x24)
-		if uint64(len(data)) < minNeeded {
-			return nil, fmt.Errorf("TMD v0 too small for %d contents (needs %d bytes, got %d)", tmd.ContentCount, minNeeded, len(data))
+		certOffset := uint64(0x1E4) + (uint64(tmd.ContentCount) * 0x24)
+		if uint64(len(data)) < certOffset {
+			return nil, fmt.Errorf("TMD v0 too small for %d contents (needs %d bytes, got %d)", tmd.ContentCount, certOffset, len(data))
 		}
 
 		tmd.Contents = make([]Content, tmd.ContentCount)
 		for i := 0; i < int(tmd.ContentCount); i++ {
 			offset := int64(0x1E4 + (0x24 * i))
-			reader.Seek(offset, io.SeekStart)
+			_, _ = reader.Seek(offset, io.SeekStart)
 			if err := binary.Read(reader, binary.BigEndian, &tmd.Contents[i].ID); err != nil {
 				return nil, err
 			}
@@ -321,25 +344,29 @@ func ParseTMD(data []byte) (*TMD, error) {
 				return nil, err
 			}
 			tmd.Contents[i].Hash = make([]byte, 0x14)
-			if err := binary.Read(reader, binary.BigEndian, &tmd.Contents[i].Hash); err != nil {
+			if _, err := io.ReadFull(reader, tmd.Contents[i].Hash); err != nil {
 				return nil, err
 			}
 		}
-		tmd.Certificate1 = make([]byte, 0x400)
-		if _, err := io.ReadFull(reader, tmd.Certificate1); err != nil {
-			return nil, err
-		}
-		tmd.Certificate2 = make([]byte, 0x300)
-		if _, err := io.ReadFull(reader, tmd.Certificate2); err != nil {
-			return nil, err
+
+		_, _ = reader.Seek(int64(certOffset), io.SeekStart)
+		if uint64(len(data)) >= certOffset+0x700 {
+			tmd.Certificate1 = make([]byte, 0x400)
+			if _, err := io.ReadFull(reader, tmd.Certificate1); err != nil {
+				return nil, err
+			}
+			tmd.Certificate2 = make([]byte, 0x300)
+			if _, err := io.ReadFull(reader, tmd.Certificate2); err != nil {
+				return nil, err
+			}
 		}
 
 	case 0x01:
-		reader.Seek(0x18C, io.SeekStart)
+		_, _ = reader.Seek(0x18C, io.SeekStart)
 		if err := binary.Read(reader, binary.BigEndian, &tmd.TitleID); err != nil {
 			return nil, err
 		}
-		reader.Seek(0x1DC, io.SeekStart)
+		_, _ = reader.Seek(0x1DC, io.SeekStart)
 		if err := binary.Read(reader, binary.BigEndian, &tmd.TitleVersion); err != nil {
 			return nil, err
 		}
@@ -347,15 +374,15 @@ func ParseTMD(data []byte) (*TMD, error) {
 			return nil, err
 		}
 
-		minNeeded := uint64(0xB04) + (uint64(tmd.ContentCount) * 0x30)
-		if uint64(len(data)) < minNeeded {
-			return nil, fmt.Errorf("TMD v1 too small for %d contents (needs %d bytes, got %d)", tmd.ContentCount, minNeeded, len(data))
+		certOffset := uint64(0xB04) + (uint64(tmd.ContentCount) * 0x30)
+		if uint64(len(data)) < certOffset {
+			return nil, fmt.Errorf("TMD v1 too small for %d contents (needs %d bytes, got %d)", tmd.ContentCount, certOffset, len(data))
 		}
 
 		tmd.Contents = make([]Content, tmd.ContentCount)
 		for c := 0; c < int(tmd.ContentCount); c++ {
 			offset := int64(0xB04 + (0x30 * c))
-			reader.Seek(offset, io.SeekStart)
+			_, _ = reader.Seek(offset, io.SeekStart)
 			if err := binary.Read(reader, binary.BigEndian, &tmd.Contents[c].ID); err != nil {
 				return nil, err
 			}
@@ -368,19 +395,23 @@ func ParseTMD(data []byte) (*TMD, error) {
 			if err := binary.Read(reader, binary.BigEndian, &tmd.Contents[c].Size); err != nil {
 				return nil, err
 			}
-			reader.Seek(offset+16, io.SeekStart)
 			tmd.Contents[c].Hash = make([]byte, 0x14)
-			if err := binary.Read(reader, binary.BigEndian, &tmd.Contents[c].Hash); err != nil {
+			if _, err := io.ReadFull(reader, tmd.Contents[c].Hash); err != nil {
 				return nil, err
 			}
 		}
-		tmd.Certificate1 = make([]byte, 0x400)
-		if err := binary.Read(reader, binary.BigEndian, &tmd.Certificate1); err != nil {
-			return nil, err
-		}
-		tmd.Certificate2 = make([]byte, 0x300)
-		if err := binary.Read(reader, binary.BigEndian, &tmd.Certificate2); err != nil {
-			return nil, err
+
+		// Positionnement exact apres les blocs de 0x30 octets (ignore les 12 octets de padding SHA-256)
+		_, _ = reader.Seek(int64(certOffset), io.SeekStart)
+		if uint64(len(data)) >= certOffset+0x700 {
+			tmd.Certificate1 = make([]byte, 0x400)
+			if _, err := io.ReadFull(reader, tmd.Certificate1); err != nil {
+				return nil, err
+			}
+			tmd.Certificate2 = make([]byte, 0x300)
+			if _, err := io.ReadFull(reader, tmd.Certificate2); err != nil {
+				return nil, err
+			}
 		}
 
 	default:
@@ -390,7 +421,7 @@ func ParseTMD(data []byte) (*TMD, error) {
 	return tmd, nil
 }
 
-func getDefaultRootCert(client *http.Client) ([]byte, error) {
+func getDefaultRootCert(ctx context.Context, client *http.Client) ([]byte, error) {
 	certCacheLock.Lock()
 	defer certCacheLock.Unlock()
 
@@ -398,8 +429,11 @@ func getDefaultRootCert(client *http.Client) ([]byte, error) {
 		return defaultCertCache, nil
 	}
 
+	reqCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+
 	url := fmt.Sprintf("http://ccs.cdn.c.shop.nintendowifi.net/ccs/download/%s/cetk", osv10TID)
-	req, err := http.NewRequest("GET", url, nil)
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -415,7 +449,7 @@ func getDefaultRootCert(client *http.Client) ([]byte, error) {
 		return nil, fmt.Errorf("failed to fetch root certificate: HTTP %d", resp.StatusCode)
 	}
 
-	data, err := io.ReadAll(resp.Body)
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxHTTPMetadataBytes))
 	if err != nil {
 		return nil, err
 	}
@@ -428,8 +462,8 @@ func getDefaultRootCert(client *http.Client) ([]byte, error) {
 	return defaultCertCache, nil
 }
 
-func generateCert(tmd *TMD, certPath string, client *http.Client) error {
-	caCert, err := getDefaultRootCert(client)
+func generateCert(ctx context.Context, tmd *TMD, certPath string, client *http.Client) error {
+	caCert, err := getDefaultRootCert(ctx, client)
 	if err != nil {
 		return err
 	}
@@ -739,6 +773,9 @@ func verifyExtractedFST(outputDir string, tmd *TMD) error {
 			pathStack = pathStack[:len(pathStack)-1]
 			endStack = endStack[:len(endStack)-1]
 		}
+		if len(pathStack) == 0 {
+			return errors.New("corrupted FST directory hierarchy")
+		}
 
 		off := entriesPtr + (uint64(i) * 0x10)
 		if off+16 > uint64(len(fstDec)) {
@@ -759,12 +796,25 @@ func verifyExtractedFST(outputDir string, tmd *TMD) error {
 			continue
 		}
 		name := string(fstDec[nameStart : nameStart+uint64(nameEnd)])
-		if name == "" {
+		if !isSafeSingleName(name) {
+			if (eType & 0x01) != 0 && eLen > i+1 && eLen <= totalEntries {
+				i = eLen - 1
+			}
 			continue
 		}
 
 		currentPath := filepath.Join(pathStack[len(pathStack)-1], name)
+		if !isPathInsideBase(outputDir, currentPath) {
+			if (eType & 0x01) != 0 && eLen > i+1 && eLen <= totalEntries {
+				i = eLen - 1
+			}
+			continue
+		}
+
 		if (eType & 0x01) != 0 {
+			if eLen <= i || eLen > totalEntries {
+				return fmt.Errorf("invalid FST directory end index %d at entry %d", eLen, i)
+			}
 			pathStack = append(pathStack, currentPath)
 			endStack = append(endStack, eLen)
 		} else if (eType & 0x80) == 0 {
@@ -773,7 +823,7 @@ func verifyExtractedFST(outputDir string, tmd *TMD) error {
 				if err != nil || st.IsDir() {
 					return fmt.Errorf("missing extracted file %s", currentPath)
 				}
-				if uint32(st.Size()) != eLen {
+				if uint64(st.Size()) != uint64(eLen) {
 					return fmt.Errorf("extracted file size mismatch for %s: got %d, expected %d", currentPath, st.Size(), eLen)
 				}
 			}
@@ -807,8 +857,22 @@ func VerifyTitle(titleID, outputDirectory string) error {
 	}
 
 	if isExtracted {
-		if _, err := os.Stat(filepath.Join(outputDir, fmt.Sprintf("%08X.app", tmd.Contents[0].ID))); err != nil {
-			return verifyExtractedFST(outputDir, tmd)
+		if _, err := resolveContentFile(outputDir, tmd.Contents[0].ID, ".app"); err != nil {
+			if _, fstErr := os.Stat(filepath.Join(outputDir, "code", "title.fst")); fstErr == nil {
+				return verifyExtractedFST(outputDir, tmd)
+			}
+			contentDir := filepath.Join(outputDir, "content")
+			for _, c := range tmd.Contents {
+				p, cErr := resolveContentFile(contentDir, c.ID, ".app")
+				if cErr != nil {
+					return cErr
+				}
+				st, sErr := os.Stat(p)
+				if sErr != nil || uint64(st.Size()) != c.Size {
+					return fmt.Errorf("extracted content size mismatch for %s", filepath.Base(p))
+				}
+			}
+			return nil
 		}
 	}
 
@@ -870,13 +934,14 @@ func extractFileStandard(srcApp, dstPath string, titleBlock cipher.Block, conten
 	remaining := length
 	firstChunk := true
 
-	bufSize := linearChunkSize
+	totalAlignedNeed := (remaining + skipBytes + 15) & ^uint64(15)
+	bufSize := min(uint64(linearChunkSize), max(uint64(4096), totalAlignedNeed))
 	encBuf := make([]byte, bufSize)
 	decBuf := make([]byte, bufSize)
 
 	for remaining > 0 {
-		toRead := uint64(bufSize)
-		need := ((remaining + skipBytes + 15) & ^uint64(15))
+		toRead := bufSize
+		need := (remaining + skipBytes + 15) & ^uint64(15)
 		if need < toRead {
 			toRead = need
 		}
@@ -886,8 +951,7 @@ func extractFileStandard(srcApp, dstPath string, titleBlock cipher.Block, conten
 			return readErr
 		}
 		if nRead == 0 {
-			fOut.Write(make([]byte, remaining))
-			break
+			return fmt.Errorf("unexpected EOF while extracting %s (%d bytes remaining)", filepath.Base(dstPath), remaining)
 		}
 
 		rem := nRead & 0xF
@@ -908,24 +972,22 @@ func extractFileStandard(srcApp, dstPath string, titleBlock cipher.Block, conten
 			if uint64(len(chunkSlice)) > skipBytes {
 				chunkSlice = chunkSlice[skipBytes:]
 			} else {
-				chunkSlice = []byte{}
+				chunkSlice = nil
 			}
 			firstChunk = false
 		}
 
-		writeLen := uint64(len(chunkSlice))
-		if writeLen > remaining {
-			writeLen = remaining
+		writeLen := min(uint64(len(chunkSlice)), remaining)
+		if writeLen > 0 {
+			if _, err := fOut.Write(chunkSlice[:writeLen]); err != nil {
+				return err
+			}
+			remaining -= writeLen
 		}
-
-		if _, err := fOut.Write(chunkSlice[:writeLen]); err != nil {
-			return err
-		}
-		remaining -= writeLen
 
 		if errors.Is(readErr, io.EOF) || errors.Is(readErr, io.ErrUnexpectedEOF) {
 			if remaining > 0 {
-				fOut.Write(make([]byte, remaining))
+				return fmt.Errorf("truncated content while extracting %s (%d bytes missing)", filepath.Base(dstPath), remaining)
 			}
 			break
 		}
@@ -982,8 +1044,7 @@ func extractFileHashed(srcApp, dstPath string, titleBlock cipher.Block, contentI
 			return readErr
 		}
 		if nRead <= h3HeaderSize {
-			fOut.Write(make([]byte, remaining))
-			break
+			return fmt.Errorf("unexpected EOF in hashed content while extracting %s", filepath.Base(dstPath))
 		}
 
 		cipher.NewCBCDecrypter(titleBlock, baseIV[:]).CryptBlocks(hashes, blockBuf[:h3HeaderSize])
@@ -1016,28 +1077,24 @@ func extractFileHashed(srcApp, dstPath string, titleBlock cipher.Block, contentI
 			validDec = decPayload[:payloadLen]
 		}
 
-		if soffset < uint64(len(validDec)) {
-			avail := uint64(len(validDec)) - soffset
-			writeLen := remaining
-			if writeLen > avail {
-				writeLen = avail
-			}
-
-			if _, err := fOut.Write(validDec[soffset : soffset+writeLen]); err != nil {
-				return err
-			}
-			remaining -= writeLen
-		} else {
-			fOut.Write(make([]byte, remaining))
-			break
+		if soffset >= uint64(len(validDec)) {
+			return fmt.Errorf("invalid FST offset in hashed content for %s", filepath.Base(dstPath))
 		}
+
+		avail := uint64(len(validDec)) - soffset
+		writeLen := min(remaining, avail)
+
+		if _, err := fOut.Write(validDec[soffset : soffset+writeLen]); err != nil {
+			return err
+		}
+		remaining -= writeLen
 
 		soffset = 0
 		currentChunkIdx++
 
 		if errors.Is(readErr, io.EOF) || errors.Is(readErr, io.ErrUnexpectedEOF) {
 			if remaining > 0 {
-				fOut.Write(make([]byte, remaining))
+				return fmt.Errorf("truncated hashed content while extracting %s (%d bytes missing)", filepath.Base(dstPath), remaining)
 			}
 			break
 		}
@@ -1047,8 +1104,8 @@ func extractFileHashed(srcApp, dstPath string, titleBlock cipher.Block, contentI
 }
 
 func DecryptAndExtractTitle(workDir, targetDir string) error {
-	workDir = strings.TrimRight(workDir, "/\\")
-	targetDir = strings.TrimRight(targetDir, "/\\")
+	workDir = filepath.Clean(strings.TrimRight(workDir, "/\\"))
+	targetDir = filepath.Clean(strings.TrimRight(targetDir, "/\\"))
 
 	tmdPath := filepath.Join(workDir, "title.tmd")
 	tikPath := filepath.Join(workDir, "title.tik")
@@ -1094,6 +1151,12 @@ func DecryptAndExtractTitle(workDir, targetDir string) error {
 	if err != nil {
 		return err
 	}
+	if len(c0Enc) == 0 {
+		return errors.New("content index 0 is empty")
+	}
+	if rem := len(c0Enc) & 0xF; rem != 0 {
+		c0Enc = append(c0Enc, make([]byte, 16-rem)...)
+	}
 
 	var zeroIV [16]byte
 	fstDec := make([]byte, len(c0Enc))
@@ -1104,10 +1167,16 @@ func DecryptAndExtractTitle(workDir, targetDir string) error {
 		return err
 	}
 
-	_ = os.WriteFile(filepath.Join(codeDir, "title.tmd"), rawTMD, 0644)
-	_ = os.WriteFile(filepath.Join(codeDir, "title.tik"), rawTik, 0644)
+	if err := os.WriteFile(filepath.Join(codeDir, "title.tmd"), rawTMD, 0644); err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(codeDir, "title.tik"), rawTik, 0644); err != nil {
+		return err
+	}
 	if len(rawCert) > 0 {
-		_ = os.WriteFile(filepath.Join(codeDir, "title.cert"), rawCert, 0644)
+		if err := os.WriteFile(filepath.Join(codeDir, "title.cert"), rawCert, 0644); err != nil {
+			return err
+		}
 	}
 
 	isFST := false
@@ -1133,7 +1202,9 @@ func DecryptAndExtractTitle(workDir, targetDir string) error {
 	}
 
 	if isFST {
-		_ = os.WriteFile(filepath.Join(codeDir, "title.fst"), fstDec, 0644)
+		if err := os.WriteFile(filepath.Join(codeDir, "title.fst"), fstDec, 0644); err != nil {
+			return err
+		}
 
 		contentMap := make(map[uint16]Content, len(tmd.Contents))
 		for _, c := range tmd.Contents {
@@ -1147,6 +1218,9 @@ func DecryptAndExtractTitle(workDir, targetDir string) error {
 			for len(endStack) > 0 && i >= endStack[len(endStack)-1] {
 				pathStack = pathStack[:len(pathStack)-1]
 				endStack = endStack[:len(endStack)-1]
+			}
+			if len(pathStack) == 0 {
+				return errors.New("corrupted FST directory stack")
 			}
 
 			off := entriesPtr + (uint64(i) * 0x10)
@@ -1170,48 +1244,60 @@ func DecryptAndExtractTitle(workDir, targetDir string) error {
 				continue
 			}
 			name := string(fstDec[nameStart : nameStart+uint64(nameEnd)])
-			if name == "" {
+
+			// Protection stricte contre le Path Traversal (noms relatifs et sous-arborescences)
+			if !isSafeSingleName(name) {
+				if (eType & 0x01) != 0 && eLen > i+1 && eLen <= totalEntries {
+					i = eLen - 1
+				}
 				continue
 			}
 
 			currentPath := filepath.Join(pathStack[len(pathStack)-1], name)
+			if !isPathInsideBase(targetDir, currentPath) {
+				if (eType & 0x01) != 0 && eLen > i+1 && eLen <= totalEntries {
+					i = eLen - 1
+				}
+				continue
+			}
 
 			if (eType & 0x01) != 0 {
+				if eLen <= i || eLen > totalEntries {
+					return fmt.Errorf("invalid FST directory boundary %d at entry %d", eLen, i)
+				}
 				if err := os.MkdirAll(currentPath, 0755); err != nil {
 					return err
 				}
 				pathStack = append(pathStack, currentPath)
 				endStack = append(endStack, eLen)
-			} else {
-				if (eType & 0x80) == 0 {
-					c, ok := contentMap[eCID]
-					if !ok {
-						continue
-					}
-					srcApp, err := resolveContentFile(workDir, c.ID, ".app")
-					if err != nil {
+			} else if (eType & 0x80) == 0 {
+				c, ok := contentMap[eCID]
+				if !ok {
+					continue
+				}
+				srcApp, err := resolveContentFile(workDir, c.ID, ".app")
+				if err != nil {
+					return err
+				}
+
+				var realOffset uint64
+				if (eFlags & 0x04) != 0 {
+					realOffset = uint64(eOff)
+				} else {
+					realOffset = uint64(eOff) * offsetFactor
+				}
+
+				if err := os.MkdirAll(filepath.Dir(currentPath), 0755); err != nil {
+					return err
+				}
+
+				if (c.Type & 0x02) != 0 {
+					if err := extractFileHashed(srcApp, currentPath, titleBlock, c.Index, realOffset, uint64(eLen)); err != nil {
 						return err
 					}
-
-					var realOffset uint64
-					if (eFlags & 0x04) != 0 {
-						realOffset = uint64(eOff)
-					} else {
-						realOffset = uint64(eOff) * offsetFactor
-					}
-
-					if err := os.MkdirAll(filepath.Dir(currentPath), 0755); err != nil {
+				} else {
+					if err := extractFileStandard(srcApp, currentPath, titleBlock, c.Index, realOffset, uint64(eLen)); err != nil {
 						return err
-					}
-
-					if (c.Type & 0x02) != 0 {
-						if err := extractFileHashed(srcApp, currentPath, titleBlock, c.Index, realOffset, uint64(eLen)); err != nil {
-							return err
-						}
-					} else {
-						if err := extractFileStandard(srcApp, currentPath, titleBlock, c.Index, realOffset, uint64(eLen)); err != nil {
-							return err
-						}
 					}
 				}
 			}
@@ -1256,7 +1342,10 @@ func GetTitleSize(titleID string, client *http.Client) (int64, error) {
 	cleanTID := NormalizeTID(titleID)
 	url := fmt.Sprintf("http://ccs.cdn.c.shop.nintendowifi.net/ccs/download/%s/tmd", cleanTID)
 
-	req, err := http.NewRequest("GET", url, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return 0, err
 	}
@@ -1272,7 +1361,7 @@ func GetTitleSize(titleID string, client *http.Client) (int64, error) {
 		return 0, fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 
-	data, err := io.ReadAll(resp.Body)
+	data, err := io.ReadAll(io.LimitReader(resp.Body, maxHTTPMetadataBytes))
 	if err != nil {
 		return 0, err
 	}
@@ -1289,9 +1378,13 @@ func GetTitleSize(titleID string, client *http.Client) (int64, error) {
 	return int64(total), nil
 }
 
-func downloadFile(client *http.Client, downloadURL, dstPath string, onProgress func(int64)) error {
+func downloadFile(ctx context.Context, client *http.Client, downloadURL, dstPath string, onProgress func(int64)) error {
 	for attempt := 1; attempt <= maxRetries; attempt++ {
-		req, err := http.NewRequest("GET", downloadURL, nil)
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
 		if err != nil {
 			return err
 		}
@@ -1299,6 +1392,9 @@ func downloadFile(client *http.Client, downloadURL, dstPath string, onProgress f
 
 		resp, err := client.Do(req)
 		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
 			if attempt < maxRetries {
 				time.Sleep(retryDelay)
 				continue
@@ -1321,36 +1417,49 @@ func downloadFile(client *http.Client, downloadURL, dstPath string, onProgress f
 			return err
 		}
 
+		var downloadedThisAttempt int64
 		buf := make([]byte, 128*1024)
+		var readErr error
+
 		for {
-			n, readErr := resp.Body.Read(buf)
+			var n int
+			n, readErr = resp.Body.Read(buf)
 			if n > 0 {
 				if _, writeErr := file.Write(buf[:n]); writeErr != nil {
 					file.Close()
 					resp.Body.Close()
 					return writeErr
 				}
+				downloadedThisAttempt += int64(n)
 				if onProgress != nil {
 					onProgress(int64(n))
 				}
 			}
 			if readErr != nil {
-				if readErr == io.EOF {
-					break
-				}
-				file.Close()
-				resp.Body.Close()
-				if attempt < maxRetries {
-					time.Sleep(retryDelay)
-					break
-				}
-				return readErr
+				break
 			}
 		}
 
 		file.Close()
 		resp.Body.Close()
-		return nil
+
+		if errors.Is(readErr, io.EOF) {
+			return nil
+		}
+
+		// Annule la progression comptabilisee en cas de tentative reessayee
+		if downloadedThisAttempt > 0 && onProgress != nil {
+			onProgress(-downloadedThisAttempt)
+		}
+
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if attempt < maxRetries {
+			time.Sleep(retryDelay)
+			continue
+		}
+		return readErr
 	}
 
 	return fmt.Errorf("failed to download %s after %d retries", downloadURL, maxRetries)
@@ -1386,7 +1495,7 @@ func DownloadAndExtractTitle(
 	}
 
 	tmdPath := filepath.Join(targetDir, "title.tmd")
-	if err := downloadFile(client, fmt.Sprintf("%s/tmd", baseURL), tmdPath, nil); err != nil {
+	if err := downloadFile(ctx, client, fmt.Sprintf("%s/tmd", baseURL), tmdPath, nil); err != nil {
 		return err
 	}
 
@@ -1401,11 +1510,11 @@ func DownloadAndExtractTitle(
 	}
 
 	tikPath := filepath.Join(targetDir, "title.tik")
-	if err := downloadFile(client, fmt.Sprintf("%s/cetk", baseURL), tikPath, nil); err != nil {
+	if err := downloadFile(ctx, client, fmt.Sprintf("%s/cetk", baseURL), tikPath, nil); err != nil {
 		return err
 	}
 
-	if err := generateCert(tmd, filepath.Join(targetDir, "title.cert"), client); err != nil {
+	if err := generateCert(ctx, tmd, filepath.Join(targetDir, "title.cert"), client); err != nil {
 		return err
 	}
 
@@ -1436,17 +1545,15 @@ func DownloadAndExtractTitle(
 		wg.Add(1)
 		go func(task dlTask) {
 			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-
 			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
 			case <-ctx.Done():
 				errChan <- ctx.Err()
 				return
-			default:
 			}
 
-			if err := downloadFile(client, task.url, task.path, onProgress); err != nil {
+			if err := downloadFile(ctx, client, task.url, task.path, onProgress); err != nil {
 				errChan <- err
 			}
 		}(t)
