@@ -4,14 +4,16 @@ package main
 
 import (
 	"os"
-	"syscall"
 	"time"
 
 	"golang.org/x/sys/windows"
 )
 
 var (
-	msvcrt    = syscall.NewLazyDLL("msvcrt.dll")
+	kernel32                    = windows.NewLazySystemDLL("kernel32.dll")
+	procFlushConsoleInputBuffer = kernel32.NewProc("FlushConsoleInputBuffer")
+
+	msvcrt    = windows.NewLazySystemDLL("msvcrt.dll")
 	procGetch = msvcrt.NewProc("_getch")
 	procKbhit = msvcrt.NewProc("_kbhit")
 )
@@ -43,7 +45,7 @@ func enableVirtualTerminal() func() {
 
 func flushStdin() {
 	stdin := windows.Handle(os.Stdin.Fd())
-	_ = windows.FlushConsoleInputBuffer(stdin)
+	_, _, _ = procFlushConsoleInputBuffer.Call(uintptr(stdin))
 	for {
 		hit, _, _ := procKbhit.Call()
 		if hit == 0 {
