@@ -298,6 +298,12 @@ func ParseTMD(data []byte) (*TMD, error) {
 		if err := binary.Read(reader, binary.BigEndian, &tmd.ContentCount); err != nil {
 			return nil, err
 		}
+
+		minNeeded := uint64(0x1E4) + (uint64(tmd.ContentCount) * 0x24)
+		if uint64(len(data)) < minNeeded {
+			return nil, fmt.Errorf("TMD v0 too small for %d contents (needs %d bytes, got %d)", tmd.ContentCount, minNeeded, len(data))
+		}
+
 		tmd.Contents = make([]Content, tmd.ContentCount)
 		for i := 0; i < int(tmd.ContentCount); i++ {
 			offset := int64(0x1E4 + (0x24 * i))
@@ -340,6 +346,12 @@ func ParseTMD(data []byte) (*TMD, error) {
 		if err := binary.Read(reader, binary.BigEndian, &tmd.ContentCount); err != nil {
 			return nil, err
 		}
+
+		minNeeded := uint64(0xB04) + (uint64(tmd.ContentCount) * 0x30)
+		if uint64(len(data)) < minNeeded {
+			return nil, fmt.Errorf("TMD v1 too small for %d contents (needs %d bytes, got %d)", tmd.ContentCount, minNeeded, len(data))
+		}
+
 		tmd.Contents = make([]Content, tmd.ContentCount)
 		for c := 0; c < int(tmd.ContentCount); c++ {
 			offset := int64(0xB04 + (0x30 * c))
@@ -695,73 +707,76 @@ func verifySingleContent(workDir string, c Content, titleBlock cipher.Block) err
 func verifyExtractedFST(outputDir string, tmd *TMD) error {
 	fstPath := filepath.Join(outputDir, "code", "title.fst")
 	fstDec, err := os.ReadFile(fstPath)
-	if err == nil && len(fstDec) >= 0x20 {
-		infoCount := binary.BigEndian.Uint32(fstDec[0x08:0x0C])
-		entriesPtr := 0x20 + (infoCount * 0x20)
-		if int(entriesPtr+16) <= len(fstDec) {
-			totalEntries := binary.BigEndian.Uint32(fstDec[entriesPtr+8 : entriesPtr+12])
-			nameTableOff := entriesPtr + (totalEntries * 0x10)
-			if int(nameTableOff) <= len(fstDec) && totalEntries > 0 && totalEntries < 100000 {
-				contentMap := make(map[uint16]Content, len(tmd.Contents))
-				for _, c := range tmd.Contents {
-					contentMap[c.Index] = c
-				}
-				pathStack := []string{outputDir}
-				endStack := []uint32{totalEntries}
-
-				for i := uint32(1); i < totalEntries; i++ {
-					for len(endStack) > 0 && i >= endStack[len(endStack)-1] {
-						pathStack = pathStack[:len(pathStack)-1]
-						endStack = endStack[:len(endStack)-1]
-					}
-					off := entriesPtr + (i * 0x10)
-					eType := fstDec[off]
-					eNameOff := (uint32(fstDec[off+1]) << 16) | (uint32(fstDec[off+2]) << 8) | uint32(fstDec[off+3])
-					eLen := binary.BigEndian.Uint32(fstDec[off+8 : off+12])
-					eCID := binary.BigEndian.Uint16(fstDec[off+14 : off+16])
-
-					nameStart := nameTableOff + eNameOff
-					if int(nameStart) >= len(fstDec) {
-						continue
-					}
-					nameEnd := bytes.IndexByte(fstDec[nameStart:], 0)
-					if nameEnd == -1 {
-						continue
-					}
-					name := string(fstDec[nameStart : nameStart+uint32(nameEnd)])
-					if name == "" {
-						continue
-					}
-					currentPath := filepath.Join(pathStack[len(pathStack)-1], name)
-					if (eType & 0x01) != 0 {
-						pathStack = append(pathStack, currentPath)
-						endStack = append(endStack, eLen)
-					} else if (eType & 0x80) == 0 {
-						if _, ok := contentMap[eCID]; ok {
-							st, err := os.Stat(currentPath)
-							if err != nil || st.IsDir() {
-								return fmt.Errorf("missing extracted file %s", currentPath)
-							}
-							if uint32(st.Size()) != eLen {
-								return fmt.Errorf("extracted file size mismatch for %s: got %d, expected %d", currentPath, st.Size(), eLen)
-							}
-						}
-					}
-				}
-				return nil
-			}
-		}
+	if err != nil {
+		return fmt.Errorf("failed to read title.fst: %w", err)
+	}
+	if len(fstDec) < 0x20 {
+		return fmt.Errorf("title.fst too small: %d bytes", len(fstDec))
 	}
 
-	contentDir := filepath.Join(outputDir, "content")
+	infoCount := binary.BigEndian.Uint32(fstDec[0x08:0x0C])
+	entriesPtr := uint64(0x20) + (uint64(infoCount) * 0x20)
+	if entriesPtr+16 > uint64(len(fstDec)) {
+		return fmt.Errorf("invalid FST header: entriesPtr out of bounds")
+	}
+
+	totalEntries := binary.BigEndian.Uint32(fstDec[entriesPtr+8 : entriesPtr+12])
+	nameTableOff := entriesPtr + (uint64(totalEntries) * 0x10)
+	if nameTableOff > uint64(len(fstDec)) || totalEntries == 0 || totalEntries >= 100000 {
+		return fmt.Errorf("invalid FST table: totalEntries (%d) or nameTableOff out of bounds", totalEntries)
+	}
+
+	contentMap := make(map[uint16]Content, len(tmd.Contents))
 	for _, c := range tmd.Contents {
-		dstPath := filepath.Join(contentDir, fmt.Sprintf("%08X.app", c.ID))
-		st, err := os.Stat(dstPath)
-		if err != nil || st.IsDir() {
-			return fmt.Errorf("missing extracted content %s", dstPath)
+		contentMap[c.Index] = c
+	}
+
+	pathStack := []string{outputDir}
+	endStack := []uint32{totalEntries}
+
+	for i := uint32(1); i < totalEntries; i++ {
+		for len(endStack) > 0 && i >= endStack[len(endStack)-1] {
+			pathStack = pathStack[:len(pathStack)-1]
+			endStack = endStack[:len(endStack)-1]
 		}
-		if uint64(st.Size()) != c.Size {
-			return fmt.Errorf("extracted content size mismatch for %s: got %d, expected %d", dstPath, st.Size(), c.Size)
+
+		off := entriesPtr + (uint64(i) * 0x10)
+		if off+16 > uint64(len(fstDec)) {
+			return fmt.Errorf("FST entry %d out of bounds", i)
+		}
+
+		eType := fstDec[off]
+		eNameOff := (uint32(fstDec[off+1]) << 16) | (uint32(fstDec[off+2]) << 8) | uint32(fstDec[off+3])
+		eLen := binary.BigEndian.Uint32(fstDec[off+8 : off+12])
+		eCID := binary.BigEndian.Uint16(fstDec[off+14 : off+16])
+
+		nameStart := nameTableOff + uint64(eNameOff)
+		if nameStart >= uint64(len(fstDec)) {
+			continue
+		}
+		nameEnd := bytes.IndexByte(fstDec[nameStart:], 0)
+		if nameEnd == -1 {
+			continue
+		}
+		name := string(fstDec[nameStart : nameStart+uint64(nameEnd)])
+		if name == "" {
+			continue
+		}
+
+		currentPath := filepath.Join(pathStack[len(pathStack)-1], name)
+		if (eType & 0x01) != 0 {
+			pathStack = append(pathStack, currentPath)
+			endStack = append(endStack, eLen)
+		} else if (eType & 0x80) == 0 {
+			if _, ok := contentMap[eCID]; ok {
+				st, err := os.Stat(currentPath)
+				if err != nil || st.IsDir() {
+					return fmt.Errorf("missing extracted file %s", currentPath)
+				}
+				if uint32(st.Size()) != eLen {
+					return fmt.Errorf("extracted file size mismatch for %s: got %d, expected %d", currentPath, st.Size(), eLen)
+				}
+			}
 		}
 	}
 	return nil
@@ -957,7 +972,7 @@ func extractFileHashed(srcApp, dstPath string, titleBlock cipher.Block, contentI
 	var cIV [16]byte
 
 	for remaining > 0 {
-		targetPos := int64(currentChunkIdx * totalBlock)
+		targetPos := int64(currentChunkIdx) * int64(totalBlock)
 		if _, err := fIn.Seek(targetPos, io.SeekStart); err != nil {
 			return err
 		}
@@ -1096,7 +1111,8 @@ func DecryptAndExtractTitle(workDir, targetDir string) error {
 	}
 
 	isFST := false
-	var infoCount, entriesPtr, totalEntries, nameTableOff uint32
+	var totalEntries uint32
+	var entriesPtr, nameTableOff uint64
 	var offsetFactor uint64 = 0x20
 
 	if len(fstDec) >= 0x20 && binary.BigEndian.Uint32(fstDec[0x00:0x04]) == 0x46535400 {
@@ -1105,12 +1121,12 @@ func DecryptAndExtractTitle(workDir, targetDir string) error {
 			offsetFactor = uint64(factor)
 		}
 
-		infoCount = binary.BigEndian.Uint32(fstDec[0x08:0x0C])
-		entriesPtr = 0x20 + (infoCount * 0x20)
-		if int(entriesPtr+16) <= len(fstDec) {
+		infoCount := binary.BigEndian.Uint32(fstDec[0x08:0x0C])
+		entriesPtr = uint64(0x20) + (uint64(infoCount) * 0x20)
+		if entriesPtr+16 <= uint64(len(fstDec)) {
 			totalEntries = binary.BigEndian.Uint32(fstDec[entriesPtr+8 : entriesPtr+12])
-			nameTableOff = entriesPtr + (totalEntries * 0x10)
-			if int(nameTableOff) <= len(fstDec) && totalEntries > 0 && totalEntries < 100000 {
+			nameTableOff = entriesPtr + (uint64(totalEntries) * 0x10)
+			if nameTableOff <= uint64(len(fstDec)) && totalEntries > 0 && totalEntries < 100000 {
 				isFST = true
 			}
 		}
@@ -1133,7 +1149,11 @@ func DecryptAndExtractTitle(workDir, targetDir string) error {
 				endStack = endStack[:len(endStack)-1]
 			}
 
-			off := entriesPtr + (i * 0x10)
+			off := entriesPtr + (uint64(i) * 0x10)
+			if off+16 > uint64(len(fstDec)) {
+				continue
+			}
+
 			eType := fstDec[off]
 			eNameOff := (uint32(fstDec[off+1]) << 16) | (uint32(fstDec[off+2]) << 8) | uint32(fstDec[off+3])
 			eOff := binary.BigEndian.Uint32(fstDec[off+4 : off+8])
@@ -1141,15 +1161,15 @@ func DecryptAndExtractTitle(workDir, targetDir string) error {
 			eFlags := binary.BigEndian.Uint16(fstDec[off+12 : off+14])
 			eCID := binary.BigEndian.Uint16(fstDec[off+14 : off+16])
 
-			nameStart := nameTableOff + eNameOff
-			if int(nameStart) >= len(fstDec) {
+			nameStart := nameTableOff + uint64(eNameOff)
+			if nameStart >= uint64(len(fstDec)) {
 				continue
 			}
 			nameEnd := bytes.IndexByte(fstDec[nameStart:], 0)
 			if nameEnd == -1 {
 				continue
 			}
-			name := string(fstDec[nameStart : nameStart+uint32(nameEnd)])
+			name := string(fstDec[nameStart : nameStart+uint64(nameEnd)])
 			if name == "" {
 				continue
 			}
