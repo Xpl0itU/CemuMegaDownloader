@@ -9,11 +9,13 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	cemumegadownloader "CemuMegaDownloader"
@@ -126,6 +128,9 @@ func (pr *ProgressReporterCLI) ClearLine() {
 }
 
 func formatBytes(b int64) string {
+	if b < 0 {
+		b = 0
+	}
 	const unit = 1024
 	if b < unit {
 		return fmt.Sprintf("%d B", b)
@@ -170,6 +175,9 @@ func (pr *ProgressReporterCLI) AddBytes(n int64) {
 	pr.mu.Lock()
 	defer pr.mu.Unlock()
 	pr.totalDownloaded += n
+	if pr.totalDownloaded < 0 {
+		pr.totalDownloaded = 0
+	}
 	now := time.Now()
 	if now.Sub(pr.lastPrintTime) < 80*time.Millisecond {
 		return
@@ -245,10 +253,7 @@ func (pr *ProgressReporterCLI) renderLocked(force bool) {
 	if err != nil || termW <= 10 {
 		termW = 80
 	}
-	maxLen := termW - 1
-	if maxLen < 20 {
-		maxLen = 20
-	}
+	maxLen := max(20, termW-1)
 
 	r := []rune(line)
 	if len(r) > maxLen {
@@ -259,18 +264,20 @@ func (pr *ProgressReporterCLI) renderLocked(force bool) {
 }
 
 func newHTTPClient() *http.Client {
+	dialer := &net.Dialer{
+		Timeout:   30 * time.Second,
+		KeepAlive: 30 * time.Second,
+	}
 	return &http.Client{
 		Transport: &http.Transport{
-			Dial: (&net.Dialer{
-				Timeout:   30 * time.Second,
-				KeepAlive: 30 * time.Second,
-			}).Dial,
+			Proxy:                 http.ProxyFromEnvironment,
+			DialContext:           dialer.DialContext,
 			MaxIdleConns:          100,
 			MaxIdleConnsPerHost:   100,
 			MaxConnsPerHost:       100,
 			IdleConnTimeout:       90 * time.Second,
 			TLSHandshakeTimeout:   10 * time.Second,
-			ResponseHeaderTimeout: 10 * time.Second,
+			ResponseHeaderTimeout: 15 * time.Second,
 			ExpectContinueTimeout: 1 * time.Second,
 		},
 	}
@@ -316,7 +323,7 @@ func extractMLCPathFromSettingsXML(xmlPath string) string {
 	}
 
 	var s XMLSettings
-	if err := xml.Unmarshal(data, &s); err == nil && s.MLCPath != "" {
+	if err := xml.Unmarshal(data, &s); err == nil && strings.TrimSpace(s.MLCPath) != "" {
 		return cleanPathInput(s.MLCPath)
 	}
 
@@ -324,7 +331,7 @@ func extractMLCPathFromSettingsXML(xmlPath string) string {
 		MLCPath string `xml:"mlc_path"`
 	}
 	var s2 SimpleXML
-	if err := xml.Unmarshal(data, &s2); err == nil && s2.MLCPath != "" {
+	if err := xml.Unmarshal(data, &s2); err == nil && strings.TrimSpace(s2.MLCPath) != "" {
 		return cleanPathInput(s2.MLCPath)
 	}
 
@@ -346,6 +353,12 @@ func detectCemuMLCDirectory() string {
 	var candidates []string
 	homeDir, _ := os.UserHomeDir()
 
+	if exe, err := os.Executable(); err == nil {
+		exeDir := filepath.Dir(exe)
+		candidates = append(candidates, filepath.Join(exeDir, "portable"), exeDir)
+	}
+	candidates = append(candidates, "portable", ".", "..")
+
 	switch runtime.GOOS {
 	case "windows":
 		if appdata := os.Getenv("APPDATA"); appdata != "" {
@@ -359,6 +372,12 @@ func detectCemuMLCDirectory() string {
 			candidates = append(candidates, filepath.Join(homeDir, "Library", "Application Support", "Cemu"))
 		}
 	default:
+		if xdgConfig := os.Getenv("XDG_CONFIG_HOME"); xdgConfig != "" {
+			candidates = append(candidates, filepath.Join(xdgConfig, "Cemu"))
+		}
+		if xdgData := os.Getenv("XDG_DATA_HOME"); xdgData != "" {
+			candidates = append(candidates, filepath.Join(xdgData, "Cemu"))
+		}
 		if homeDir != "" {
 			candidates = append(candidates,
 				filepath.Join(homeDir, ".local", "share", "Cemu"),
@@ -368,8 +387,6 @@ func detectCemuMLCDirectory() string {
 			)
 		}
 	}
-
-	candidates = append(candidates, ".", "..")
 
 	for _, c := range candidates {
 		xmlFile := filepath.Join(c, "settings.xml")
@@ -518,14 +535,11 @@ func SelectTitlesInteractive(items []TitleItem, region string) ([]TitleItem, boo
 	fmt.Print("\033[?1049h\033[?25l")
 	defer fmt.Print("\033[?1049l\033[?25h")
 
-	maxNameLen := 0
+	maxNameLen := 15
 	for _, it := range items {
 		if l := len([]rune(it.Name)); l > maxNameLen {
 			maxNameLen = l
 		}
-	}
-	if maxNameLen < 15 {
-		maxNameLen = 15
 	}
 
 	lastW, lastH := 0, 0
@@ -546,26 +560,10 @@ func SelectTitlesInteractive(items []TitleItem, region string) ([]TitleItem, boo
 			needRedraw = true
 		}
 
-		boxW := termW
-		innerW := boxW - 2
-		if innerW < 36 {
-			innerW = 36
-		}
+		innerW := max(36, termW-2)
+		pageSize := max(4, min(total, termH-8))
 
-		pageSize := termH - 8
-		if pageSize > total {
-			pageSize = total
-		}
-		if pageSize < 4 {
-			pageSize = 4
-		}
-
-		if cursor < 0 {
-			cursor = 0
-		}
-		if cursor >= total {
-			cursor = total - 1
-		}
+		cursor = max(0, min(cursor, total-1))
 
 		if cursor < scrollOffset {
 			scrollOffset = cursor
@@ -575,9 +573,7 @@ func SelectTitlesInteractive(items []TitleItem, region string) ([]TitleItem, boo
 			scrollOffset = cursor - pageSize + 1
 			needRedraw = true
 		}
-		if scrollOffset < 0 {
-			scrollOffset = 0
-		}
+		scrollOffset = max(0, scrollOffset)
 		if total > pageSize && scrollOffset > total-pageSize {
 			scrollOffset = total - pageSize
 		}
@@ -597,10 +593,7 @@ func SelectTitlesInteractive(items []TitleItem, region string) ([]TitleItem, boo
 				if len(r) > innerW {
 					r = r[:innerW]
 				}
-				pad := innerW - len(r)
-				if pad < 0 {
-					pad = 0
-				}
+				pad := max(0, innerW-len(r))
 				fmt.Printf("\r\033[2K║%s%s║\n", string(r), strings.Repeat(" ", pad))
 			}
 
@@ -629,48 +622,30 @@ func SelectTitlesInteractive(items []TitleItem, region string) ([]TitleItem, boo
 
 				if showPathColumn {
 					nameW := maxNameLen
-					availPath := innerW - 24 - nameW - 4
-					if availPath < 10 {
-						availPath = 10
-					}
+					availPath := max(10, innerW-24-nameW-4)
 					nameStr := fitMiddle(items[idx].Name, nameW)
-					namePad := nameW - len([]rune(nameStr))
-					if namePad < 0 {
-						namePad = 0
-					}
+					namePad := max(0, nameW-len([]rune(nameStr)))
 					pathStr := fitMiddle(items[idx].Path, availPath)
-					pathPad := availPath - len([]rune(pathStr))
-					if pathPad < 0 {
-						pathPad = 0
-					}
+					pathPad := max(0, availPath-len([]rune(pathStr)))
 					rowContent := fmt.Sprintf("%s%s%s  %s%s -> %s%s",
 						prefix, box, items[idx].TitleID, nameStr, strings.Repeat(" ", namePad), pathStr, strings.Repeat(" ", pathPad))
 					printBordered(rowContent)
 				} else {
 					availName := innerW - 24
 					nameStr := fitMiddle(items[idx].Name, availName)
-					namePad := availName - len([]rune(nameStr))
-					if namePad < 0 {
-						namePad = 0
-					}
+					namePad := max(0, availName-len([]rune(nameStr)))
 					rowContent := fmt.Sprintf("%s%s%s  %s%s", prefix, box, items[idx].TitleID, nameStr, strings.Repeat(" ", namePad))
 					printBordered(rowContent)
 				}
 			}
 
 			fmt.Printf("\r\033[2K╚%s╝\n", strings.Repeat("═", innerW))
-			visibleEnd := scrollOffset + pageSize
-			if visibleEnd > total {
-				visibleEnd = total
-			}
+			visibleEnd := min(total, scrollOffset+pageSize)
 			fmt.Printf("\r\033[2K[Selected: %d / %d] (Scroll %d-%d of %d)\n",
 				selectedCount, total, scrollOffset+1, visibleEnd, total)
 
 			curPath := items[cursor].Path
-			availStatus := termW - 10
-			if availStatus < 10 {
-				availStatus = 10
-			}
+			availStatus := max(10, termW-10)
 			fmt.Printf("\r\033[2KTarget: %s\033[J", fitMiddle(curPath, availStatus))
 
 			needRedraw = false
@@ -876,6 +851,9 @@ func startRegionWorkflow(region string, reader *bufio.Reader) {
 }
 
 func downloadBatch(chosenTitles []TitleItem, region string, client *http.Client, cleanInstall bool) {
+	ctx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stopSignals()
+
 	totalTitles := len(chosenTitles)
 
 	var (
@@ -896,6 +874,9 @@ func downloadBatch(chosenTitles []TitleItem, region string, client *http.Client,
 	for _, item := range chosenTitles {
 		tid := item.TitleID
 		scanGroup.Go(func() error {
+			if ctx.Err() != nil {
+				return nil
+			}
 			sz, err := cemumegadownloader.GetTitleSize(tid, client)
 			if err == nil && sz > 0 {
 				sizeMu.Lock()
@@ -921,16 +902,17 @@ func downloadBatch(chosenTitles []TitleItem, region string, client *http.Client,
 	g.SetLimit(maxConcurrentTitles)
 
 	for _, item := range chosenTitles {
-		item := item
 		g.Go(func() error {
+			if ctx.Err() != nil {
+				return nil
+			}
 			progressReporter.TitleStarted()
 			progressReporter.LogLine("[Info] Downloading %s (%s)", item.TitleID, item.Name)
 
-			targetDir := item.Path
 			err := cemumegadownloader.DownloadAndExtractTitle(
-				context.Background(),
+				ctx,
 				item.TitleID,
-				targetDir,
+				item.Path,
 				client,
 				cleanInstall,
 				progressReporter.AddBytes,
@@ -958,8 +940,7 @@ func downloadBatch(chosenTitles []TitleItem, region string, client *http.Client,
 	fmt.Printf("\n[Info] Running final completeness and integrity check on all %d titles...\n", totalTitles)
 	var finalMissingOrCorrupt []string
 	for idx, item := range chosenTitles {
-		targetDir := item.Path
-		if err := cemumegadownloader.VerifyTitle(item.TitleID, targetDir); err != nil {
+		if err := cemumegadownloader.VerifyTitle(item.TitleID, item.Path); err != nil {
 			fmt.Printf("[Error] [%d/%d] Final check FAILED for %s: %v\n", idx+1, totalTitles, item.TitleID, err)
 			finalMissingOrCorrupt = append(finalMissingOrCorrupt, item.TitleID)
 		}
@@ -971,13 +952,13 @@ func downloadBatch(chosenTitles []TitleItem, region string, client *http.Client,
 	if len(finalMissingOrCorrupt) == 0 && len(failedTitles) == 0 {
 		fmt.Println("[Info] All done! Every single title is complete, verified, and ready for Cemu.")
 		fmt.Println("Press Enter to exit...")
-		bufio.NewReader(os.Stdin).ReadBytes('\n')
+		_, _ = bufio.NewReader(os.Stdin).ReadBytes('\n')
 		os.Exit(0)
 	} else {
 		fmt.Printf("[Error] Titles failing verification: %v\n", finalMissingOrCorrupt)
 		fmt.Println("[Error] Some titles were not able to be downloaded or verified.")
 		fmt.Println("Press Enter to exit...")
-		bufio.NewReader(os.Stdin).ReadBytes('\n')
+		_, _ = bufio.NewReader(os.Stdin).ReadBytes('\n')
 		os.Exit(1)
 	}
 }
