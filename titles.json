@@ -66,11 +66,11 @@
     },
     {
       "titleID": "0005001b10067200",
-      "name": "Caffeine title ID list"
+      "name": "Caffeine Title ID List"
     },
     {
       "titleID": "0005001b10069200",
-      "name": "pclkey_eur"
+      "name": "Parental Controls Master Key (pclkey_eur)"
     },
     {
       "titleID": "0005003010010209",
@@ -200,11 +200,11 @@
     },
     {
       "titleID": "0005001b10067100",
-      "name": "Caffeine title ID list"
+      "name": "Caffeine Title ID List"
     },
     {
       "titleID": "0005001b10069100",
-      "name": "pclkey_usa"
+      "name": "Parental Controls Master Key (pclkey_usa)"
     },
     {
       "titleID": "0005003010010109",
@@ -334,11 +334,11 @@
     },
     {
       "titleID": "0005001b10067000",
-      "name": "Caffeine title ID list"
+      "name": "Caffeine Title ID List"
     },
     {
       "titleID": "0005001b10069000",
-      "name": "pclkey_jpn"
+      "name": "Parental Controls Master Key (pclkey_jpn)"
     },
     {
       "titleID": "0005003010010009",
@@ -403,76 +403,112 @@
   ],
   "All": [
     {
+      "titleID": "0005001010000100",
+      "name": "boot1 (SLC Bootloader)"
+    },
+    {
+      "titleID": "0005001010000200",
+      "name": "DRH Firmware (Wireless Display)"
+    },
+    {
+      "titleID": "0005000e1fbf1000",
+      "name": "DRC System Applet"
+    },
+    {
+      "titleID": "0005001010000400",
+      "name": "Bluetooth Firmware"
+    },
+    {
+      "titleID": "0005001010004000",
+      "name": "System OS (v0 - cafe2wii)"
+    },
+    {
+      "titleID": "0005001010004001",
+      "name": "System OS (v1 - eShop vWii)"
+    },
+    {
+      "titleID": "0005001010004009",
+      "name": "System OS (v9)"
+    },
+    {
+      "titleID": "000500101000400a",
+      "name": "System OS (v10 - Cafe OS Shared RPLs)"
+    },
+    {
+      "titleID": "00050010100040ff",
+      "name": "System OS (v255)"
+    },
+    {
       "titleID": "0005001010066000",
-      "name": "ECO Process"
+      "name": "ECO Process (Quick Start & Standby)"
     },
     {
       "titleID": "0005001b10042300",
-      "name": "memoryclear_exceptions"
+      "name": "Memory Clear Exceptions"
     },
     {
       "titleID": "0005001b10042400",
-      "name": "Fonts"
+      "name": "System Fonts"
     },
     {
       "titleID": "0005001b1004f000",
-      "name": "SWKBD (Software Keyboard) Data"
+      "name": "Software Keyboard Data (swkbd)"
     },
     {
       "titleID": "0005001b10050000",
-      "name": "DeviceEula"
+      "name": "Device EULA Data"
     },
     {
       "titleID": "0005001b10051000",
-      "name": "ErrEula"
+      "name": "Error System Applet Data (erreula)"
     },
     {
       "titleID": "0005001b10052000",
-      "name": "Country/Location data"
+      "name": "Country & Location Shared Data"
     },
     {
       "titleID": "0005001b10053000",
-      "name": "NGWord"
+      "name": "Profanity Filter Dictionary (NGWord)"
     },
     {
       "titleID": "0005001b10054000",
-      "name": "key and cert files"
+      "name": "System Keys & SSL Certificates"
     },
     {
       "titleID": "0005001b10056000",
-      "name": "Mii rendering resources"
+      "name": "Mii Rendering Resources (mii_resource)"
     },
     {
       "titleID": "0005001b10057000",
-      "name": "Boot screen resources"
+      "name": "Boot Splash & Startup Assets (startup_data)"
     },
     {
       "titleID": "0005001b10058000",
-      "name": "Resources for DRMApp"
+      "name": "DRM Applet Data (drmapp)"
     },
     {
       "titleID": "0005001b1005c000",
-      "name": "Country and language data for nn_ec.rpl"
+      "name": "Country & Language Data (iso_resource)"
     },
     {
       "titleID": "0005001b1005f000",
-      "name": "OS Patch Map"
+      "name": "OS Patch Map & Timezone Data"
     },
     {
       "titleID": "0005001b10063000",
-      "name": "wagonu_specification"
+      "name": "System Transfer Manifest (wagonu_specification)"
     },
     {
       "titleID": "0005001b10065000",
-      "name": "live.dat"
+      "name": "System Shared Data (live.dat)"
     },
     {
       "titleID": "0005001b10068000",
-      "name": "Title ID list for nn_sl.rpl"
+      "name": "Shared Library Whitelist (sl_list)"
     },
     {
       "titleID": "0005001b1006c000",
-      "name": "trial_list"
+      "name": "eShop Demo Limits (trial_list)"
     },
     {
       "titleID": "000500301001a10a",
