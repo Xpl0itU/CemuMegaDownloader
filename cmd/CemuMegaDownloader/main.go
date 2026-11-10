@@ -6,11 +6,13 @@ import (
 	"encoding/json"
 	"encoding/xml"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"sync"
@@ -24,8 +26,8 @@ import (
 )
 
 const (
-	maxConcurrentTitles = 3
-	barWidth            = 20
+	concurrentTitles = 3
+	barWidth         = 20
 )
 
 type KeyCode int
@@ -47,34 +49,51 @@ type TitleItem struct {
 	Selected bool
 }
 
+type SpeedSample struct {
+	t     time.Time
+	bytes int64
+}
+
 type SpeedEstimator struct {
-	lastTime  time.Time
-	lastBytes int64
+	samples   []SpeedSample
 	speedMBps float64
 }
 
 func newSpeedEstimator() *SpeedEstimator {
 	return &SpeedEstimator{
-		lastTime: time.Now(),
+		samples: []SpeedSample{{t: time.Now(), bytes: 0}},
 	}
 }
 
 func (se *SpeedEstimator) Update(currentBytes int64) float64 {
 	now := time.Now()
-	dt := now.Sub(se.lastTime).Seconds()
-	if dt >= 0.25 {
-		diff := currentBytes - se.lastBytes
-		if diff < 0 {
-			diff = 0
+	se.samples = append(se.samples, SpeedSample{t: now, bytes: currentBytes})
+
+	cutoff := now.Add(-3 * time.Second)
+	idx := 0
+	for i, s := range se.samples {
+		if s.t.After(cutoff) {
+			idx = i
+			break
 		}
-		instant := (float64(diff) / (1024 * 1024)) / dt
-		if se.speedMBps == 0 {
-			se.speedMBps = instant
-		} else {
-			se.speedMBps = 0.3*instant + 0.7*se.speedMBps
+	}
+	if idx > 0 {
+		se.samples = se.samples[idx-1:]
+	}
+
+	if len(se.samples) >= 2 {
+		first := se.samples[0]
+		last := se.samples[len(se.samples)-1]
+		dt := last.t.Sub(first.t).Seconds()
+		diff := last.bytes - first.bytes
+		if dt >= 0.5 && diff >= 0 {
+			instant := (float64(diff) / (1024 * 1024)) / dt
+			if se.speedMBps <= 0 {
+				se.speedMBps = instant
+			} else {
+				se.speedMBps = 0.25*instant + 0.75*se.speedMBps
+			}
 		}
-		se.lastTime = now
-		se.lastBytes = currentBytes
 	}
 	return se.speedMBps
 }
@@ -82,12 +101,12 @@ func (se *SpeedEstimator) Update(currentBytes int64) float64 {
 type ProgressReporterCLI struct {
 	mu              sync.Mutex
 	totalToDownload int64
-	totalDownloaded int64
+	totalDownloaded atomic.Int64
 	startTime       time.Time
-	lastPrintTime   time.Time
+	lastPrintNano   atomic.Int64
 	totalTitles     int
-	completedTitles int
-	activeTitles    int
+	completedTitles atomic.Int32
+	activeTitles    atomic.Int32
 	exactSizeKnown  bool
 	speedEstimator  *SpeedEstimator
 }
@@ -103,12 +122,12 @@ func (pr *ProgressReporterCLI) SetBatchTotals(totalTitles int, totalBytes int64)
 	pr.mu.Lock()
 	defer pr.mu.Unlock()
 	pr.totalToDownload = totalBytes
-	pr.totalDownloaded = 0
+	pr.totalDownloaded.Store(0)
 	pr.startTime = time.Now()
-	pr.lastPrintTime = time.Time{}
+	pr.lastPrintNano.Store(0)
 	pr.totalTitles = totalTitles
-	pr.completedTitles = 0
-	pr.activeTitles = 0
+	pr.completedTitles.Store(0)
+	pr.activeTitles.Store(0)
 	pr.exactSizeKnown = totalBytes > 0
 	pr.speedEstimator = newSpeedEstimator()
 }
@@ -172,63 +191,80 @@ func makeProgressBar(percentage float64, width int) string {
 }
 
 func (pr *ProgressReporterCLI) AddBytes(n int64) {
-	pr.mu.Lock()
-	defer pr.mu.Unlock()
-	pr.totalDownloaded += n
-	if pr.totalDownloaded < 0 {
-		pr.totalDownloaded = 0
+	curr := pr.totalDownloaded.Add(n)
+	if curr < 0 {
+		pr.totalDownloaded.Store(0)
 	}
-	now := time.Now()
-	if now.Sub(pr.lastPrintTime) < 80*time.Millisecond {
+	now := time.Now().UnixNano()
+	last := pr.lastPrintNano.Load()
+	if now-last < int64(80*time.Millisecond) {
 		return
 	}
-	pr.lastPrintTime = now
-	pr.renderLocked(false)
+	if pr.lastPrintNano.CompareAndSwap(last, now) {
+		pr.mu.Lock()
+		pr.renderLocked(false)
+		pr.mu.Unlock()
+	}
 }
 
 func (pr *ProgressReporterCLI) TitleStarted() {
+	pr.activeTitles.Add(1)
 	pr.mu.Lock()
-	defer pr.mu.Unlock()
-	pr.activeTitles++
 	pr.renderLocked(false)
+	pr.mu.Unlock()
 }
 
 func (pr *ProgressReporterCLI) TitleFinished(success bool) {
-	pr.mu.Lock()
-	defer pr.mu.Unlock()
-	if pr.activeTitles > 0 {
-		pr.activeTitles--
-	}
+	pr.activeTitles.Add(-1)
 	if success {
-		pr.completedTitles++
+		pr.completedTitles.Add(1)
 	}
+	pr.mu.Lock()
 	pr.renderLocked(true)
+	pr.mu.Unlock()
 }
 
 func (pr *ProgressReporterCLI) renderLocked(force bool) {
+	totalDown := pr.totalDownloaded.Load()
+	if totalDown < 0 {
+		totalDown = 0
+	}
+	compTitles := int(pr.completedTitles.Load())
+	actTitles := int(pr.activeTitles.Load())
+	if actTitles < 0 {
+		actTitles = 0
+	}
+
 	elapsed := time.Since(pr.startTime)
-	speedMBps := pr.speedEstimator.Update(pr.totalDownloaded)
+	speedMBps := pr.speedEstimator.Update(totalDown)
 	if speedMBps <= 0 && elapsed.Seconds() > 0.1 {
-		speedMBps = (float64(pr.totalDownloaded) / (1024 * 1024)) / elapsed.Seconds()
+		speedMBps = (float64(totalDown) / (1024 * 1024)) / elapsed.Seconds()
 	}
 
 	var percentage float64
 	remainingStr := "--:--"
 
 	if pr.totalToDownload > 0 {
-		percentage = (float64(pr.totalDownloaded) / float64(pr.totalToDownload)) * 100.0
+		percentage = (float64(totalDown) / float64(pr.totalToDownload)) * 100.0
 		if percentage > 100.0 {
 			percentage = 100.0
 		}
-		if speedMBps > 0.01 && pr.totalToDownload > pr.totalDownloaded {
-			remBytes := float64(pr.totalToDownload - pr.totalDownloaded)
-			remSec := remBytes / (speedMBps * 1024 * 1024)
-			remainingStr = formatDuration(time.Duration(remSec * float64(time.Second)))
-		} else if pr.totalDownloaded >= pr.totalToDownload {
+		if totalDown >= pr.totalToDownload {
 			remainingStr = "00:00"
+		} else if speedMBps > 0.05 {
+			effSpeed := speedMBps
+			if elapsed.Seconds() > 5.0 {
+				avgSpeed := (float64(totalDown) / (1024 * 1024)) / elapsed.Seconds()
+				if avgSpeed > 0.01 {
+					effSpeed = 0.7*speedMBps + 0.3*avgSpeed
+				}
+			}
+			remBytes := float64(pr.totalToDownload - totalDown)
+			remSec := remBytes / (effSpeed * 1024 * 1024)
+			remainingStr = formatDuration(time.Duration(remSec * float64(time.Second)))
 		}
 	} else if pr.totalTitles > 0 {
-		percentage = (float64(pr.completedTitles) / float64(pr.totalTitles)) * 100.0
+		percentage = (float64(compTitles) / float64(pr.totalTitles)) * 100.0
 	}
 
 	totalStr := formatBytes(pr.totalToDownload)
@@ -237,12 +273,12 @@ func (pr *ProgressReporterCLI) renderLocked(force bool) {
 	}
 
 	line := fmt.Sprintf("[%d/%d done | %d active] [%s] %5.1f%% | %s / %s | %.2f MB/s | %s < %s",
-		pr.completedTitles,
+		compTitles,
 		pr.totalTitles,
-		pr.activeTitles,
+		actTitles,
 		makeProgressBar(percentage, barWidth),
 		percentage,
-		formatBytes(pr.totalDownloaded),
+		formatBytes(totalDown),
 		totalStr,
 		speedMBps,
 		formatDuration(elapsed),
@@ -272,13 +308,16 @@ func newHTTPClient() *http.Client {
 		Transport: &http.Transport{
 			Proxy:                 http.ProxyFromEnvironment,
 			DialContext:           dialer.DialContext,
-			MaxIdleConns:          100,
-			MaxIdleConnsPerHost:   100,
-			MaxConnsPerHost:       100,
+			MaxIdleConns:          256,
+			MaxIdleConnsPerHost:   256,
+			MaxConnsPerHost:       0,
 			IdleConnTimeout:       90 * time.Second,
 			TLSHandshakeTimeout:   10 * time.Second,
-			ResponseHeaderTimeout: 15 * time.Second,
+			ResponseHeaderTimeout: 30 * time.Second,
 			ExpectContinueTimeout: 1 * time.Second,
+			DisableCompression:    true,
+			ReadBufferSize:        256 * 1024,
+			WriteBufferSize:       64 * 1024,
 		},
 	}
 }
@@ -349,70 +388,339 @@ func extractMLCPathFromSettingsXML(xmlPath string) string {
 	return ""
 }
 
-func detectCemuMLCDirectory() string {
-	var candidates []string
-	homeDir, _ := os.UserHomeDir()
-
-	if exe, err := os.Executable(); err == nil {
-		exeDir := filepath.Dir(exe)
-		candidates = append(candidates, filepath.Join(exeDir, "portable"), exeDir)
+func validateCemuDirectory(dir string) (string, string, bool) {
+	info, err := os.Stat(dir)
+	if err != nil || !info.IsDir() {
+		return "", "", false
 	}
-	candidates = append(candidates, "portable", ".", "..")
+
+	base := filepath.Base(filepath.Clean(dir))
+	if base != "Cemu" && base != "cemu" {
+		return "", "", false
+	}
+
+	cemuSubDirs := []string{
+		"gameProfiles",
+		"graphicPacks",
+		"controllerProfiles",
+		"shaderCache",
+		"mlc01",
+	}
+
+	existingSubs := 0
+	for _, sub := range cemuSubDirs {
+		if st, err := os.Stat(filepath.Join(dir, sub)); err == nil && st.IsDir() {
+			existingSubs++
+		}
+	}
+
+	xmlFile := filepath.Join(dir, "settings.xml")
+	hasXML := false
+	if st, err := os.Stat(xmlFile); err == nil && !st.IsDir() {
+		hasXML = true
+	}
+
+	if !hasXML {
+		altConfigDir := strings.Replace(dir, filepath.Join(".local", "share"), ".config", 1)
+		altConfigDir = strings.Replace(altConfigDir, filepath.Join("data", "cemu"), filepath.Join("config", "cemu"), 1)
+		altXML := filepath.Join(altConfigDir, "settings.xml")
+		if st, err := os.Stat(altXML); err == nil && !st.IsDir() {
+			xmlFile = altXML
+			hasXML = true
+		}
+	}
+
+	if !hasXML && existingSubs < 2 {
+		return "", "", false
+	}
+	if hasXML && existingSubs == 0 {
+		if data, err := os.ReadFile(xmlFile); err == nil {
+			s := string(data)
+			if !strings.Contains(s, "<content") && !strings.Contains(s, "<mlc_path>") && !strings.Contains(s, "<Graphic>") {
+				return "", "", false
+			}
+		} else {
+			return "", "", false
+		}
+	}
+
+	mlcPath := filepath.Join(dir, "mlc01")
+	if hasXML {
+		if customMLC := extractMLCPathFromSettingsXML(xmlFile); customMLC != "" {
+			mlcPath = customMLC
+		}
+	}
+
+	return dir, mlcPath, true
+}
+
+func detectCemuDirectories() (string, string) {
+	homeDir, _ := os.UserHomeDir()
+	var searchDirs []string
 
 	switch runtime.GOOS {
 	case "windows":
 		if appdata := os.Getenv("APPDATA"); appdata != "" {
-			candidates = append(candidates, filepath.Join(appdata, "Cemu"))
-		}
-		if localappdata := os.Getenv("LOCALAPPDATA"); localappdata != "" {
-			candidates = append(candidates, filepath.Join(localappdata, "Cemu"))
+			searchDirs = append(searchDirs, filepath.Join(appdata, "Cemu"))
 		}
 	case "darwin":
 		if homeDir != "" {
-			candidates = append(candidates, filepath.Join(homeDir, "Library", "Application Support", "Cemu"))
+			searchDirs = append(searchDirs, filepath.Join(homeDir, "Library", "Application Support", "Cemu"))
 		}
 	default:
-		if xdgConfig := os.Getenv("XDG_CONFIG_HOME"); xdgConfig != "" {
-			candidates = append(candidates, filepath.Join(xdgConfig, "Cemu"))
-		}
-		if xdgData := os.Getenv("XDG_DATA_HOME"); xdgData != "" {
-			candidates = append(candidates, filepath.Join(xdgData, "Cemu"))
-		}
 		if homeDir != "" {
-			candidates = append(candidates,
-				filepath.Join(homeDir, ".local", "share", "Cemu"),
-				filepath.Join(homeDir, ".config", "Cemu"),
+			searchDirs = append(searchDirs,
 				filepath.Join(homeDir, ".var", "app", "info.cemu.Cemu", "data", "cemu"),
-				filepath.Join(homeDir, ".var", "app", "info.cemu.Cemu", "config", "cemu"),
 			)
 		}
+		if dataHome := os.Getenv("XDG_DATA_HOME"); dataHome != "" {
+			searchDirs = append(searchDirs, filepath.Join(dataHome, "Cemu"))
+		} else if homeDir != "" {
+			searchDirs = append(searchDirs, filepath.Join(homeDir, ".local", "share", "Cemu"))
+		}
 	}
 
-	for _, c := range candidates {
-		xmlFile := filepath.Join(c, "settings.xml")
+	for _, candidate := range searchDirs {
+		if cemuDir, mlcDir, ok := validateCemuDirectory(candidate); ok {
+			return cemuDir, mlcDir
+		}
+	}
+
+	return "", ""
+}
+
+func inspectCustomCemuPath(p string) (string, string) {
+	cleaned := cleanPathInput(p)
+	for _, dir := range []string{cleaned, filepath.Dir(cleaned)} {
+		xmlFile := filepath.Join(dir, "settings.xml")
 		if info, err := os.Stat(xmlFile); err == nil && !info.IsDir() {
-			mlcCustom := extractMLCPathFromSettingsXML(xmlFile)
-			if mlcCustom != "" {
-				if infoMlc, err := os.Stat(mlcCustom); err == nil && infoMlc.IsDir() {
-					return mlcCustom
+			if mlcCustom := extractMLCPathFromSettingsXML(xmlFile); mlcCustom != "" {
+				return dir, mlcCustom
+			}
+			return dir, filepath.Join(dir, "mlc01")
+		}
+		for _, name := range []string{"Cemu.exe", "cemu.exe", "Cemu", "cemu"} {
+			if info, err := os.Stat(filepath.Join(dir, name)); err == nil && !info.IsDir() {
+				return dir, filepath.Join(dir, "mlc01")
+			}
+		}
+	}
+	return "", ""
+}
+
+func ensureStandardMLCDirectories(mlcRoot string) {
+	for _, sub := range []string{
+		"sys/config",
+		"sys/import",
+		"sys/update",
+		"sys/title",
+		"usr/title",
+		"usr/save/system/act",
+	} {
+		_ = os.MkdirAll(filepath.Join(mlcRoot, filepath.FromSlash(sub)), 0755)
+	}
+}
+
+func detectCemuRegion(cemuDir string) string {
+	if cemuDir == "" {
+		return ""
+	}
+	xmlFile := filepath.Join(cemuDir, "settings.xml")
+	if info, err := os.Stat(xmlFile); err != nil || info.IsDir() {
+		altConfigDir := strings.Replace(cemuDir, filepath.Join(".local", "share"), ".config", 1)
+		altConfigDir = strings.Replace(altConfigDir, filepath.Join("data", "cemu"), filepath.Join("config", "cemu"), 1)
+		altXML := filepath.Join(altConfigDir, "settings.xml")
+		if st, err := os.Stat(altXML); err == nil && !st.IsDir() {
+			xmlFile = altXML
+		}
+	}
+	if data, err := os.ReadFile(xmlFile); err == nil {
+		s := string(data)
+		if strings.Contains(s, "10040200") || strings.Contains(s, "10047200") {
+			return "EUR"
+		}
+		if strings.Contains(s, "10040100") || strings.Contains(s, "10047100") {
+			return "USA"
+		}
+		if strings.Contains(s, "10040000") || strings.Contains(s, "10047000") {
+			return "JPN"
+		}
+	}
+	sysDirs := []string{
+		filepath.Join(cemuDir, "mlc01", "sys", "title", "00050010"),
+	}
+	if mlcCustom := extractMLCPathFromSettingsXML(xmlFile); mlcCustom != "" {
+		sysDirs = append([]string{filepath.Join(mlcCustom, "sys", "title", "00050010")}, sysDirs...)
+	}
+	for _, sysDir := range sysDirs {
+		if entries, err := os.ReadDir(sysDir); err == nil {
+			for _, e := range entries {
+				if e.Name() == "10040200" {
+					return "EUR"
+				}
+				if e.Name() == "10040100" {
+					return "USA"
+				}
+				if e.Name() == "10040000" {
+					return "JPN"
 				}
 			}
-			mlcDefault := filepath.Join(c, "mlc01")
-			if infoMlc, err := os.Stat(mlcDefault); err == nil && infoMlc.IsDir() {
-				return mlcDefault
-			}
-		}
-
-		directMlc := filepath.Join(c, "mlc01")
-		if infoMlc, err := os.Stat(directMlc); err == nil && infoMlc.IsDir() {
-			return directMlc
 		}
 	}
-
 	return ""
 }
 
-func resolveMLCDestPath(baseDir, titleID string) string {
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
+		return err
+	}
+
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+
+	_, err = io.Copy(out, in)
+	return err
+}
+
+func setupCafeLibs(mlcRoot, cemuDir, targetBaseDir string) (string, int) {
+	osv10Code := filepath.Join(mlcRoot, "sys", "title", "00050010", "1000400a", "code")
+	if info, err := os.Stat(osv10Code); err != nil || !info.IsDir() {
+		return "", 0
+	}
+
+	rpls := []string{
+		"snd_user.rpl",
+		"snduser2.rpl",
+		"swkbd.rpl",
+		"nsyskbd.rpl",
+		"erreula.rpl",
+		"drmapp.rpl",
+		"nn_sl.rpl",
+	}
+
+	var targets []string
+	if cemuDir != "" {
+		targets = append(targets, filepath.Join(cemuDir, "cafeLibs"))
+	}
+
+	baseClean := cleanPathInput(targetBaseDir)
+	localDest := filepath.Join(baseClean, "cafeLibs")
+	if strings.HasSuffix(strings.ToLower(baseClean), "mlc01") {
+		localDest = filepath.Join(filepath.Dir(baseClean), "cafeLibs")
+	}
+
+	found := false
+	for _, t := range targets {
+		if filepath.Clean(t) == filepath.Clean(localDest) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		targets = append(targets, localDest)
+	}
+
+	var primary string
+	var primaryCount int
+	for _, dest := range targets {
+		if err := os.MkdirAll(dest, 0755); err != nil {
+			continue
+		}
+		copied := 0
+		for _, rpl := range rpls {
+			src := filepath.Join(osv10Code, rpl)
+			if _, err := os.Stat(src); err == nil {
+				if err := copyFile(src, filepath.Join(dest, rpl)); err == nil {
+					copied++
+				}
+			}
+		}
+		if copied > 0 && primary == "" {
+			if absDest, err := filepath.Abs(dest); err == nil {
+				primary = absDest
+			} else {
+				primary = dest
+			}
+			primaryCount = copied
+		}
+	}
+	return primary, primaryCount
+}
+
+func configureCemuGameProfile(cemuDir, region string, reader *bufio.Reader) (string, string, bool) {
+	if cemuDir == "" {
+		return "", "", false
+	}
+
+	menuTIDs := map[string]string{
+		"EUR": "0005001010040200",
+		"USA": "0005001010040100",
+		"JPN": "0005001010040000",
+	}
+	menuTID, ok := menuTIDs[region]
+	if !ok {
+		return "", "", false
+	}
+
+	profilesDir := filepath.Join(cemuDir, "gameProfiles")
+	if err := os.MkdirAll(profilesDir, 0755); err != nil {
+		return "", "", false
+	}
+
+	profilePath := filepath.Join(profilesDir, menuTID+".ini")
+	if absProf, err := filepath.Abs(profilePath); err == nil {
+		profilePath = absProf
+	}
+	bakPath := profilePath + ".bak"
+	savedBak := ""
+
+	if data, err := os.ReadFile(profilePath); err == nil {
+		shouldBackup := true
+		if _, errBak := os.Stat(bakPath); errBak == nil {
+			fmt.Printf("\n[Notice] Existing profile backup detected: %s\n", bakPath)
+			if reader != nil && !askYesNo(reader, "Do you want to overwrite this existing backup? [y/N]: ", false) {
+				shouldBackup = false
+				fmt.Println("[Info] Existing backup preserved.")
+				savedBak = bakPath + " (preserved)"
+			}
+		}
+		if shouldBackup {
+			if os.WriteFile(bakPath, data, 0644) == nil {
+				savedBak = bakPath
+			}
+		}
+
+		content := string(data)
+		if strings.Contains(content, "loadSharedLibraries") {
+			re := regexp.MustCompile(`(?i)loadSharedLibraries\s*=\s*(false|true)`)
+			content = re.ReplaceAllString(content, "loadSharedLibraries = true")
+		} else if strings.Contains(content, "[General]") {
+			content = strings.Replace(content, "[General]", "[General]\nloadSharedLibraries = true", 1)
+		} else {
+			content = "[General]\nloadSharedLibraries = true\n\n" + content
+		}
+		if os.WriteFile(profilePath, []byte(content), 0644) == nil {
+			return profilePath, savedBak, true
+		}
+		return "", "", false
+	}
+
+	if os.WriteFile(profilePath, []byte("[General]\nloadSharedLibraries = true\n"), 0644) == nil {
+		return profilePath, "", true
+	}
+	return "", "", false
+}
+
+func resolveMLCDestPath(baseDir, titleID string, cemu2xMode bool) string {
 	clean := cemumegadownloader.NormalizeTID(titleID)
 	high := clean
 	low := ""
@@ -422,8 +730,14 @@ func resolveMLCDestPath(baseDir, titleID string) string {
 	}
 
 	subFolder := "sys"
-	if high == "0005000b" || high == "00050000" || high == "00050002" || high == "0005000c" || high == "0005000e" {
-		subFolder = "usr"
+	if cemu2xMode {
+		if high == "0005000b" || high == "00050000" || high == "00050002" || high == "0005000c" || (high == "0005000e" && clean != "0005000e1fbf1000") {
+			subFolder = "usr"
+		}
+	} else {
+		if high == "0005000b" || high == "00050000" || high == "00050002" || high == "0005000c" || high == "0005000e" {
+			subFolder = "usr"
+		}
 	}
 
 	baseClean := cleanPathInput(baseDir)
@@ -455,11 +769,18 @@ func ensureTitlesJSONData(client *http.Client) ([]byte, error) {
 		}
 	}
 
+	if len(cemumegadownloader.EmbeddedTitlesJSON) > 64 {
+		var cat cemumegadownloader.TitlesCatalog
+		if json.Unmarshal(cemumegadownloader.EmbeddedTitlesJSON, &cat) == nil && len(cat.EUR) > 0 {
+			return cemumegadownloader.EmbeddedTitlesJSON, nil
+		}
+	}
+
 	fmt.Println("[Info] Generating titles.json...")
 	return cemumegadownloader.GenerateTitlesJSON(client, "titles.json")
 }
 
-func LoadTitlesForRegion(region, baseDir string, client *http.Client) ([]TitleItem, error) {
+func LoadTitlesForRegion(region, baseDir string, client *http.Client, cemu2xMode bool) ([]TitleItem, error) {
 	data, err := ensureTitlesJSONData(client)
 	if err != nil {
 		return nil, err
@@ -489,16 +810,19 @@ func LoadTitlesForRegion(region, baseDir string, client *http.Client) ([]TitleIt
 		if norm == "" || norm == "dummy" {
 			continue
 		}
+		if !cemu2xMode && cemumegadownloader.IsSLCTitle(norm) {
+			continue
+		}
 		if _, ok := seen[norm]; !ok {
 			seen[norm] = struct{}{}
-			name := entry.Name
+			name := cemumegadownloader.CleanTitleName(entry.Name)
 			if name == "" {
 				name = norm
 			}
 			items = append(items, TitleItem{
 				TitleID:  norm,
 				Name:     name,
-				Path:     resolveMLCDestPath(baseDir, norm),
+				Path:     resolveMLCDestPath(baseDir, norm, cemu2xMode),
 				Selected: true,
 			})
 		}
@@ -734,8 +1058,14 @@ func main() {
 
 	reader := bufio.NewReader(os.Stdin)
 
+	cemuDir, _ := detectCemuDirectories()
+	detectedReg := detectCemuRegion(cemuDir)
+
 	for {
 		fmt.Println("Menu:")
+		if detectedReg != "" {
+			fmt.Printf(" [Cemu detected region: %s]\n", detectedReg)
+		}
 		fmt.Println("1. Download EUR titles")
 		fmt.Println("2. Download USA titles")
 		fmt.Println("3. Download JPN titles")
@@ -767,17 +1097,28 @@ func startRegionWorkflow(region string, reader *bufio.Reader) {
 	var targetBaseDir string
 	cleanInstall := false
 
-	detectedMlc := detectCemuMLCDirectory()
-	if detectedMlc != "" {
-		absMlc, _ := filepath.Abs(detectedMlc)
-		fmt.Printf("\n[Cemu Detected] mlc01 directory found at:\n  %s\n", absMlc)
-		if err := checkDirectoryWritable(absMlc); err == nil {
-			if askYesNo(reader, "Do you want to install titles directly into this Cemu folder? [Y/n]: ", true) {
-				targetBaseDir = absMlc
-				fmt.Printf("[Info] Destination set to: %s\n", targetBaseDir)
+	detectedCemuDir, detectedMlc := detectCemuDirectories()
+	detectedRegion := detectCemuRegion(detectedCemuDir)
+
+	if detectedCemuDir != "" {
+		absCemu, _ := filepath.Abs(detectedCemuDir)
+		fmt.Printf("\n[Cemu Detected] Found Cemu directory at:\n  %s\n", absCemu)
+		if detectedRegion != "" {
+			fmt.Printf("[Cemu Detected] Active console region detected: %s\n", detectedRegion)
+			if detectedRegion != region {
+				fmt.Printf("[Notice] Note: Selected download region (%s) differs from detected Cemu region (%s).\n", region, detectedRegion)
 			}
-		} else {
-			fmt.Printf("[Warning] Missing write permissions for %s (%v).\n", absMlc, err)
+		}
+		if detectedMlc != "" {
+			absMlc, _ := filepath.Abs(detectedMlc)
+			if err := checkDirectoryWritable(absMlc); err == nil {
+				if askYesNo(reader, "Do you want to install titles directly into this Cemu directory? [Y/n]: ", true) {
+					targetBaseDir = absMlc
+					fmt.Printf("[Info] Destination set to: %s\n", targetBaseDir)
+				}
+			} else {
+				fmt.Printf("[Warning] Missing write permissions for %s (%v).\n", absMlc, err)
+			}
 		}
 	}
 
@@ -792,8 +1133,15 @@ func startRegionWorkflow(region string, reader *bufio.Reader) {
 				cleaned := cleanPathInput(inputPath)
 				if err := checkDirectoryWritable(cleaned); err == nil {
 					absCustom, _ := filepath.Abs(cleaned)
-					targetBaseDir = absCustom
-					fmt.Printf("[Info] Custom destination set to: %s\n", targetBaseDir)
+					if cDir, mMlc := inspectCustomCemuPath(cleaned); cDir != "" {
+						detectedCemuDir = cDir
+						targetBaseDir = mMlc
+						fmt.Printf("[Info] Recognized Cemu directory at: %s\n", cDir)
+						fmt.Printf("[Info] Destination mlc01 set to: %s\n", targetBaseDir)
+					} else {
+						targetBaseDir = absCustom
+						fmt.Printf("[Info] Custom destination set to: %s\n", targetBaseDir)
+					}
 					break
 				} else {
 					fmt.Printf("[Warning] Path '%s' is not writable or invalid: %v\n", cleaned, err)
@@ -817,6 +1165,30 @@ func startRegionWorkflow(region string, reader *bufio.Reader) {
 		mlcRoot = filepath.Join(mlcRoot, "mlc01")
 	}
 
+	fmt.Println("\nTarget structure for extracted titles:")
+	fmt.Println("")
+	fmt.Println("1. Cemu 2.x+ Structure (recommended)")
+	fmt.Println("   Cemu 2.x requires a USA region patch for Version Data to prevent infinite loading screens on Home Menu")
+	fmt.Println("   (firmware remains 100% in your requested region, except for the USA Version Data patch).")
+	fmt.Println("   Includes required cafeLibs RPL extraction, SLC OSv10 titles, and auto profile setup.")
+	fmt.Println("")
+	fmt.Println("2. Cemu Legacy Structure")
+	fmt.Println("   Standard unmodified download and extraction only (Cemu 1.x).")
+	fmt.Println("")
+	fmt.Print("Select structure [1/2] (default: 1): ")
+	structChoice := readLineStdin(reader)
+	cemu2xMode := structChoice != "2"
+
+	if cemu2xMode {
+		fmt.Println("[Info] Cemu 2.x+ structure selected.")
+		ensureStandardMLCDirectories(mlcRoot)
+		if p, cnt := setupCafeLibs(mlcRoot, detectedCemuDir, targetBaseDir); p != "" {
+			fmt.Printf("[Info] cafeLibs already populated (%d RPL files) at:\n  %s\n", cnt, p)
+		}
+	} else {
+		fmt.Println("[Info] Cemu Legacy structure selected.")
+	}
+
 	usrDir := filepath.Join(mlcRoot, "usr")
 	if entries, err := os.ReadDir(usrDir); err == nil && len(entries) > 0 {
 		fmt.Printf("\n[Notice] Existing 'usr' directory detected at:\n  %s\n", usrDir)
@@ -834,8 +1206,15 @@ func startRegionWorkflow(region string, reader *bufio.Reader) {
 		}
 	}
 
+	autoConfigureProfile := false
+	if cemu2xMode && detectedCemuDir != "" {
+		if askYesNo(reader, "\nDo you want to automatically configure Cemu to load cafeLibs for Wii U Menu? [Y/n]: ", true) {
+			autoConfigureProfile = true
+		}
+	}
+
 	fmt.Printf("\n[Info] Loading MLC title list for region %s...\n", region)
-	availableItems, err := LoadTitlesForRegion(region, targetBaseDir, client)
+	availableItems, err := LoadTitlesForRegion(region, targetBaseDir, client, cemu2xMode)
 	if err != nil {
 		fmt.Printf("[Error] Failed to load titles: %v\n", err)
 		return
@@ -847,10 +1226,81 @@ func startRegionWorkflow(region string, reader *bufio.Reader) {
 		return
 	}
 
-	downloadBatch(selectedItems, region, client, cleanInstall)
+	cemumegadownloader.SetMaxConcurrentDownloads(6)
+
+	downloadBatch(selectedItems, region, client, cleanInstall, cemu2xMode, mlcRoot, detectedCemuDir, targetBaseDir, autoConfigureProfile, reader)
 }
 
-func downloadBatch(chosenTitles []TitleItem, region string, client *http.Client, cleanInstall bool) {
+func printFinalSummaryAndSteps(
+	region string,
+	cemu2xMode bool,
+	totalTitles, verifiedTitles int,
+	totalBytes int64,
+	mlcRoot, cemuDir, cafeLibsPath string,
+	rplCount int,
+	profileConfigured bool,
+) {
+	absMlc, err := filepath.Abs(mlcRoot)
+	if err != nil {
+		absMlc = mlcRoot
+	}
+
+	fmt.Println("\n==================================================")
+	fmt.Println("               INSTALLATION SUMMARY               ")
+	fmt.Println("==================================================")
+	fmt.Printf("• Titles verified : %d / %d (%s) [%s]\n", verifiedTitles, totalTitles, formatBytes(totalBytes), region)
+	fmt.Printf("• MLC folder      : %s\n", absMlc)
+	if cemu2xMode && cafeLibsPath != "" {
+		fmt.Printf("• cafeLibs folder : %s (%d RPL files)\n", cafeLibsPath, rplCount)
+	}
+	fmt.Println("--------------------------------------------------")
+
+	if !cemu2xMode {
+		if cemuDir == "" {
+			fmt.Println("Next steps:")
+			fmt.Println("1. Move the 'mlc01' folder into your Cemu directory (next to Cemu executable).")
+			fmt.Println("2. Launch Cemu!")
+		} else {
+			fmt.Println("All done! 'mlc01' has been installed directly into your Cemu directory.")
+		}
+		return
+	}
+
+	if cemuDir != "" && profileConfigured {
+		fmt.Println("All done! Everything was installed and configured automatically.")
+		fmt.Println("1. Open Cemu.")
+		fmt.Println("2. Launch the 'Wii U Menu' directly.")
+		fmt.Println("3. Enjoy!")
+	} else if cemuDir != "" && !profileConfigured {
+		fmt.Println("Files are installed directly into Cemu. One last step:")
+		fmt.Println("1. Open Cemu.")
+		fmt.Println("2. Right-click 'Wii U Menu' -> 'Edit Game Profile' -> 'General' tab.")
+		fmt.Println("   Ensure 'Load Shared Libraries' is checked.")
+		fmt.Println("3. Launch the Wii U Menu.")
+		fmt.Println("4. Enjoy!")
+	} else {
+		fmt.Println("Next steps in Cemu:")
+		fmt.Println("1. Copy BOTH 'mlc01' and 'cafeLibs' into your AppData (or equivalent) Cemu directory.")
+		fmt.Println("2. Open Cemu.")
+		fmt.Println("3. Right-click 'Wii U Menu' in the list -> 'Edit Game Profile' -> 'General' tab.")
+		fmt.Println("   Ensure 'Load Shared Libraries' is checked.")
+		fmt.Println("4. Launch the Wii U Menu.")
+		fmt.Println("5. Enjoy!")
+	}
+}
+
+func downloadBatch(
+	chosenTitles []TitleItem,
+	region string,
+	client *http.Client,
+	cleanInstall bool,
+	cemu2xMode bool,
+	mlcRoot string,
+	cemuDir string,
+	targetBaseDir string,
+	autoConfigureProfile bool,
+	reader *bufio.Reader,
+) {
 	ctx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stopSignals()
 
@@ -866,10 +1316,9 @@ func downloadBatch(chosenTitles []TitleItem, region string, client *http.Client,
 
 	var (
 		totalBatchBytes int64
-		sizeMu          sync.Mutex
 		scanGroup       errgroup.Group
 	)
-	scanGroup.SetLimit(10)
+	scanGroup.SetLimit(16)
 
 	for _, item := range chosenTitles {
 		tid := item.TitleID
@@ -879,9 +1328,7 @@ func downloadBatch(chosenTitles []TitleItem, region string, client *http.Client,
 			}
 			sz, err := cemumegadownloader.GetTitleSize(tid, client)
 			if err == nil && sz > 0 {
-				sizeMu.Lock()
-				totalBatchBytes += sz
-				sizeMu.Unlock()
+				atomic.AddInt64(&totalBatchBytes, sz)
 			}
 			return nil
 		})
@@ -896,10 +1343,10 @@ func downloadBatch(chosenTitles []TitleItem, region string, client *http.Client,
 	}
 
 	fmt.Printf("\n[Info] Starting concurrent download of %d titles for region %s (%d titles in parallel)...\n\n",
-		totalTitles, region, maxConcurrentTitles)
+		totalTitles, region, concurrentTitles)
 
 	var g errgroup.Group
-	g.SetLimit(maxConcurrentTitles)
+	g.SetLimit(concurrentTitles)
 
 	for _, item := range chosenTitles {
 		g.Go(func() error {
@@ -915,6 +1362,7 @@ func downloadBatch(chosenTitles []TitleItem, region string, client *http.Client,
 				item.Path,
 				client,
 				cleanInstall,
+				cemu2xMode,
 				progressReporter.AddBytes,
 			)
 			if err != nil {
@@ -930,6 +1378,11 @@ func downloadBatch(chosenTitles []TitleItem, region string, client *http.Client,
 			doneNow := atomic.AddInt32(&verifiedCnt, 1)
 			progressReporter.LogLine("[Info] [%d/%d] %s (%s) verified and extracted OK",
 				doneNow, totalTitles, item.TitleID, item.Name)
+			if cemu2xMode && item.TitleID == "000500101000400a" {
+				if p, cnt := setupCafeLibs(mlcRoot, cemuDir, targetBaseDir); p != "" {
+					progressReporter.LogLine("[Info] cafeLibs populated (%d RPL files) at: %s", cnt, p)
+				}
+			}
 			return nil
 		})
 	}
@@ -939,6 +1392,7 @@ func downloadBatch(chosenTitles []TitleItem, region string, client *http.Client,
 
 	fmt.Printf("\n[Info] Running final completeness and integrity check on all %d titles...\n", totalTitles)
 	var finalMissingOrCorrupt []string
+
 	for idx, item := range chosenTitles {
 		if err := cemumegadownloader.VerifyTitle(item.TitleID, item.Path); err != nil {
 			fmt.Printf("[Error] [%d/%d] Final check FAILED for %s: %v\n", idx+1, totalTitles, item.TitleID, err)
@@ -946,19 +1400,42 @@ func downloadBatch(chosenTitles []TitleItem, region string, client *http.Client,
 		}
 	}
 
-	fmt.Printf("\n[Info] Final Summary for %s: %d/%d titles present (extracted to mlc01 and verified)\n",
-		region, totalTitles-len(finalMissingOrCorrupt), totalTitles)
+	verifiedCount := totalTitles - len(finalMissingOrCorrupt)
+
+	var cafeLibsPath string
+	var rplCount int
+	profileConfigured := false
+
+	if cemu2xMode {
+		cafeLibsPath, rplCount = setupCafeLibs(mlcRoot, cemuDir, targetBaseDir)
+		if autoConfigureProfile && cemuDir != "" {
+			_, _, profileConfigured = configureCemuGameProfile(cemuDir, region, reader)
+		}
+	}
+
+	printFinalSummaryAndSteps(
+		region,
+		cemu2xMode,
+		totalTitles,
+		verifiedCount,
+		totalBatchBytes,
+		mlcRoot,
+		cemuDir,
+		cafeLibsPath,
+		rplCount,
+		profileConfigured,
+	)
 
 	if len(finalMissingOrCorrupt) == 0 && len(failedTitles) == 0 {
-		fmt.Println("[Info] All done! Every single title is complete, verified, and ready for Cemu.")
+		fmt.Println("\n[Info] All done! Every single title is complete, verified, and ready for Cemu.")
 		fmt.Println("Press Enter to exit...")
-		_, _ = bufio.NewReader(os.Stdin).ReadBytes('\n')
+		_, _ = reader.ReadBytes('\n')
 		os.Exit(0)
 	} else {
-		fmt.Printf("[Error] Titles failing verification: %v\n", finalMissingOrCorrupt)
+		fmt.Printf("\n[Error] Titles failing verification: %v\n", finalMissingOrCorrupt)
 		fmt.Println("[Error] Some titles were not able to be downloaded or verified.")
 		fmt.Println("Press Enter to exit...")
-		_, _ = bufio.NewReader(os.Stdin).ReadBytes('\n')
+		_, _ = reader.ReadBytes('\n')
 		os.Exit(1)
 	}
 }
